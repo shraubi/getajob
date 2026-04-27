@@ -1,0 +1,32 @@
+Иван Иванов
+ivan@example.com | +7 (999) 000-00-00 | t.me/your_handle | github.com/your_handle
+
+ОПЫТ
+
+Старший разработчик Python — ООО Пример (2022 – наст. время)
+- REST API на FastAPI + PostgreSQL + Redis, покрытие тестами pytest >80%
+- Разработал ML-пайплайн для ранжирования контента, latency -40%
+- Команда 5 человек, agile, code review, weekly demos
+
+Разработчик Python — ООО Другая Компания (2020 – 2022)
+- Django, Celery, RabbitMQ
+- Интеграции с внешними API (платёжные системы, CRM)
+- Оптимизировал N+1 запросы, ускорил выгрузку отчётов в 3x
+
+ОБРАЗОВАНИЕ
+
+Технический университет — Бакалавр CS (2020)
+
+НАВЫКИ
+
+Python, FastAPI, Django, PostgreSQL, Redis, Docker, Celery,
+asyncio, SQLAlchemy, Pydantic, pytest, Git, Linux, REST API
+
+ЯЗЫКИ
+
+Русский — родной | Английский — B2
+
+---
+// ЗАМЕНИ ВСЁ ВЫШЕ НА СВОЁ РЕАЛЬНОЕ РЕЗЮМЕ
+// Первая строка файла = твоё имя (бот использует его для генерации)
+// Всё после этой линии бот игнорирует в финальном PDF
