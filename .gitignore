@@ -3,4 +3,3 @@ __pycache__/
 *.pyc
 *.pyo
 ca-certificates.crt
-cv/base_cv.txt
