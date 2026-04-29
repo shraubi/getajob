@@ -1,3 +1,4 @@
+import os
 import logging
 import pathlib
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +15,7 @@ BASE_CV_PATH = pathlib.Path(__file__).parent.parent / "cv" / "base_cv.txt"
 
 
 def _base_cv() -> str:
-    return BASE_CV_PATH.read_text(encoding="utf-8")
+    return os.environ.get("CV") or BASE_CV_PATH.read_text(encoding="utf-8")
 
 
 async def _notify(ctx, text: str, **kwargs):
