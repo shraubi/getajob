@@ -1,8 +1,16 @@
 import json
 import litellm
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 litellm.drop_params = True
+
+_RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def _is_retriable(exc: BaseException) -> bool:
+    code = getattr(exc, "status_code", None)
+    # Retry on network errors (no status code) and transient server errors
+    return code is None or code in _RETRIABLE_STATUS_CODES
 
 
 def _build_messages(system: str | None, messages: list) -> list:
@@ -11,7 +19,11 @@ def _build_messages(system: str | None, messages: list) -> list:
     return messages
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception(_is_retriable),
+)
 async def chat(
     model: str,
     messages: list,
@@ -31,11 +43,15 @@ async def chat(
 
 
 def extract_tool_calls(response: litellm.ModelResponse) -> list:
+    if not response.choices:
+        return []
     msg = response.choices[0].message
     return msg.tool_calls or []
 
 
 def build_assistant_turn(response: litellm.ModelResponse) -> dict:
+    if not response.choices:
+        return {"role": "assistant", "content": ""}
     msg = response.choices[0].message
     turn: dict = {"role": "assistant", "content": msg.content or ""}
     if msg.tool_calls:

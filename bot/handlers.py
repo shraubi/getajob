@@ -10,6 +10,8 @@ from rag import store as rag_store
 
 logger = logging.getLogger(__name__)
 
+_MIN_JD_LENGTH = 50
+
 
 async def _notify(ctx, text: str, **kwargs):
     await ctx.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, **kwargs)
@@ -25,10 +27,16 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         return
 
     jd = text[:3000].strip()
-    await _notify(ctx, "⏳ Reviewing vacancy...")
+
+    if len(jd) < _MIN_JD_LENGTH:
+        await _notify(ctx, f"⚠️ Too short to be a job description ({len(jd)} chars). Paste the full JD.")
+        return
+
+    async def on_progress(status: str) -> None:
+        await _notify(ctx, status)
 
     try:
-        result = await pipeline_run(jd)
+        result = await pipeline_run(jd, on_progress=on_progress)
     except Exception as e:
         logger.exception("Pipeline error")
         await _notify(ctx, f"❌ Error: {e}")
@@ -87,8 +95,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    action, ref_id = query.data.split(":", 1)
-    ref_id = int(ref_id)
+    try:
+        action, ref_id_str = query.data.split(":", 1)
+        ref_id = int(ref_id_str)
+    except (ValueError, AttributeError):
+        await query.edit_message_text("⚠️ Invalid action — please try again.")
+        return
+
     payload = get_pending(ref_id)
 
     if action == "skip":
@@ -97,7 +110,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "send":
         if not payload:
-            await query.edit_message_text("⚠️ Data not found, please try again.")
+            await query.edit_message_text("⚠️ Data not found — the bot may have restarted. Please try again.")
             return
         rag_store.save_application(
             jd=payload.get("jd", ""),
@@ -114,7 +127,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "edit":
         if not payload:
-            await query.edit_message_text("⚠️ Data not found, please try again.")
+            await query.edit_message_text("⚠️ Data not found — the bot may have restarted. Please try again.")
             return
         await query.edit_message_text(
             f"✏️ Edit and send back to me:\n\n{payload['tg_message']}"

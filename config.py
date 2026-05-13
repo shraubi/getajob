@@ -21,3 +21,7 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 
 # Local ChromaDB persistence path
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "storage/chroma_db")
+
+# Agent iteration caps — raise if a model needs more steps to finish
+MAX_ANALYZER_ITERATIONS = int(os.environ.get("MAX_ANALYZER_ITERATIONS", "5"))
+MAX_WRITER_ITERATIONS   = int(os.environ.get("MAX_WRITER_ITERATIONS",   "8"))

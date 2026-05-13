@@ -10,9 +10,8 @@ _CV_PATH = pathlib.Path(__file__).parent.parent / "cv" / "base_cv.txt"
 _SECTION_RE = re.compile(r"^[A-ZА-ЯЁ][A-ZА-ЯЁ\s]{2,}$", re.MULTILINE)
 
 
-def _load_cv_text() -> str:
+def load_cv_text() -> str:
     raw = os.environ.get("CV") or _CV_PATH.read_text(encoding="utf-8")
-    # Strip everything from the separator line onward (comments)
     parts = raw.split("\n---")
     return parts[0].strip()
 
@@ -26,7 +25,6 @@ def _chunk(text: str) -> list[dict]:
         return [{"section": "full", "text": clean}]
 
     chunks = []
-    # Content before first section header (name, contact info)
     header_text = clean[: section_matches[0].start()].strip()
     if header_text:
         chunks.append({"section": "header", "text": header_text})
@@ -43,8 +41,19 @@ def _chunk(text: str) -> list[dict]:
 
 
 def index_candidate_profile(cv_text: str | None = None) -> None:
-    text = cv_text or _load_cv_text()
+    text = cv_text or load_cv_text()
+
+    if not text.strip():
+        logger.error(
+            "CV text is empty — profile will not be indexed. "
+            "Set CV= in .env or replace cv/base_cv.txt with your real CV."
+        )
+        return
+
     chunks = _chunk(text)
+    if not chunks:
+        logger.error("CV produced no indexable chunks — check cv/base_cv.txt format")
+        return
 
     col = _profile()
     ids = [f"profile_chunk_{i}" for i in range(len(chunks))]

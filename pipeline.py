@@ -4,11 +4,13 @@ import logging
 import os
 import pathlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Awaitable, Callable
 
 from llm import client as llm
 from rag import store as rag_store
+from rag.indexer import load_cv_text
 from agents import job_analyzer, cv_writer
 from agents.job_analyzer import JobAnalysis
 import config
@@ -33,6 +35,8 @@ Reply ONLY in this XML format, nothing else:
 """
 
 _LOG_PATH = pathlib.Path(__file__).parent / "logs" / "applications.jsonl"
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -78,7 +82,7 @@ async def _score(jd: str) -> ScoreResult:
         temperature=0,
         max_tokens=256,
     )
-    text = response.choices[0].message.content or ""
+    text = (response.choices[0].message.content or "") if response.choices else ""
     try:
         score = int(_extract("score", text, "0"))
     except ValueError:
@@ -100,8 +104,13 @@ def _log(entry: dict) -> None:
         logger.warning("Failed to write log entry: %s", exc)
 
 
-async def run(jd: str) -> PipelineResult:
+async def run(jd: str, on_progress: ProgressCallback | None = None) -> PipelineResult:
+    async def _progress(msg: str) -> None:
+        if on_progress:
+            await on_progress(msg)
+
     # Step 1: score with cheap model
+    await _progress("⏳ Scoring vacancy...")
     score_result = await _score(jd)
     logger.info(
         "Score: %d/10 — %s at %s (model: %s)",
@@ -126,6 +135,7 @@ async def run(jd: str) -> PipelineResult:
         )
 
     # Step 2: Agent 1 — analyze JD structure
+    await _progress(f"🔍 Analyzing job requirements... ({score_result.score}/10)")
     analysis = await job_analyzer.analyze(jd)
 
     # Step 3: RAG — enrich context using analysis (parallel fetch)
@@ -141,12 +151,14 @@ async def run(jd: str) -> PipelineResult:
     )
 
     # Step 4: Agent 2 — write CV + message
+    await _progress(f"✍️ Writing application ({len(profile_chunks)} profile chunks, {len(past_apps)} examples)...")
     result = await cv_writer.write(
         jd=jd,
         analysis=analysis,
         profile_chunks=profile_chunks,
         past_apps=past_apps,
         candidate_name=_candidate_name(),
+        fallback_cv=load_cv_text() if not profile_chunks else "",
     )
 
     # Step 5: log

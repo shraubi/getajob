@@ -146,4 +146,4 @@ def dispatch_writer_tool(name: str, args: dict) -> str:
             f"{meta.get('cv_snippet', '')}"
         )
 
-    return f"Unknown tool: {name}"
+    raise ValueError(f"Unknown writer tool: {name!r}")

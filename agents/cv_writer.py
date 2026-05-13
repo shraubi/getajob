@@ -37,6 +37,8 @@ Hard rules — violations are unacceptable:
 - Tone: capable professional who read the JD properly — not desperate, not generic\
 """
 
+_FINISH_REMINDER = "Please call the finish tool to submit your CV and message."
+
 
 @dataclass
 class ApplicationResult:
@@ -55,6 +57,7 @@ async def write(
     profile_chunks: list[str],
     past_apps: list[dict],
     candidate_name: str = "Candidate",
+    fallback_cv: str = "",
 ) -> ApplicationResult:
     system = _SYSTEM_TEMPLATE.format(
         name=candidate_name,
@@ -68,6 +71,10 @@ async def write(
     pre_context = ""
     if profile_chunks:
         pre_context += "Pre-fetched profile context:\n" + "\n\n---\n\n".join(profile_chunks)
+    elif fallback_cv:
+        logger.warning("Profile RAG is empty — using raw CV text as fallback context")
+        pre_context += f"Candidate profile (full CV):\n{fallback_cv}"
+
     if past_apps:
         snippets = [
             f"{a['meta'].get('role', 'role')} at {a['meta'].get('company', 'company')}: "
@@ -81,8 +88,10 @@ async def write(
         user_content += f"\n\n{pre_context}"
 
     messages = [{"role": "user", "content": user_content}]
+    last_response_text = ""
+    reminder_sent = False
 
-    for iteration in range(8):
+    for iteration in range(config.MAX_WRITER_ITERATIONS):
         response = await llm.chat(
             model=config.GENERATE_MODEL,
             messages=messages,
@@ -93,38 +102,51 @@ async def write(
         )
 
         tool_calls = llm.extract_tool_calls(response)
+        last_response_text = (response.choices[0].message.content or "") if response.choices else ""
         messages.append(llm.build_assistant_turn(response))
 
         if not tool_calls:
-            messages.append({
-                "role": "user",
-                "content": "Please call the finish tool with your CV and message.",
-            })
+            if not reminder_sent:
+                messages.append({"role": "user", "content": _FINISH_REMINDER})
+                reminder_sent = True
             continue
 
-        finish_called = False
+        reminder_sent = False
+
         for tc in tool_calls:
             name = tc.function.name
-            args = json.loads(tc.function.arguments)
+
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError as e:
+                logger.warning("Tool %r: invalid JSON arguments: %s", name, e)
+                messages.append(llm.build_tool_result(tc.id, f"Error: could not parse arguments — {e}"))
+                continue
+
+            logger.info("Writer tool: %s(%s)", name, str(args)[:120])
 
             if name == "finish":
-                logger.info(
-                    "CV written: reasoning=%s", args.get("reasoning", "")[:100]
-                )
+                logger.info("CV written: reasoning=%s", args.get("reasoning", "")[:100])
                 return ApplicationResult(
                     cv_text=args["cv_text"],
                     message=args["message"],
                     reasoning=args.get("reasoning", ""),
                 )
 
-            result = dispatch_writer_tool(name, args)
+            try:
+                result = dispatch_writer_tool(name, args)
+            except ValueError as e:
+                logger.error("Writer tool dispatch error: %s", e)
+                messages.append(llm.build_tool_result(tc.id, str(e)))
+                continue
+
             messages.append(llm.build_tool_result(tc.id, result))
-            finish_called = True
 
-        if not finish_called and not tool_calls:
-            messages.append({
-                "role": "user",
-                "content": "Please call finish to submit the CV and message.",
-            })
-
-    raise WriterError("CV writer did not call finish within iteration limit")
+    logger.error(
+        "Writer hit iteration limit (%d). Last response: %s",
+        config.MAX_WRITER_ITERATIONS,
+        last_response_text[:300],
+    )
+    raise WriterError(
+        f"CV writer did not call finish within {config.MAX_WRITER_ITERATIONS} iterations"
+    )

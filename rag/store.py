@@ -1,6 +1,9 @@
 import hashlib
+import logging
 import chromadb
 import config
+
+logger = logging.getLogger(__name__)
 
 _client = None
 _profile_col = None
@@ -72,6 +75,10 @@ def query_applications(query: str, n: int = 2) -> list[dict]:
 def save_application(
     jd: str, cv: str, message: str, score: int, role: str, company: str
 ) -> None:
+    if len(jd) > 1000:
+        logger.debug("JD truncated %d→1000 chars for embedding (%s @ %s)", len(jd), role, company)
+    if len(cv) > 500:
+        logger.debug("CV truncated %d→500 chars for metadata storage (%s @ %s)", len(cv), role, company)
     app_id = hashlib.sha256(jd.encode()).hexdigest()[:16]
     _applications().upsert(
         ids=[app_id],
