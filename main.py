@@ -4,8 +4,15 @@ from bot.handlers import handle_vacancy_message, handle_callback
 
 logging.basicConfig(level=logging.INFO)
 
+
 def run():
     from config import TELEGRAM_BOT_TOKEN
+    from rag.indexer import index_candidate_profile
+
+    logging.info("Indexing candidate profile...")
+    index_candidate_profile()
+    logging.info("Profile indexed. Starting bot.")
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     vacancy_filter = filters.TEXT & ~filters.COMMAND
@@ -13,6 +20,7 @@ def run():
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     app.run_polling(allowed_updates=["message", "callback_query"])
+
 
 if __name__ == "__main__":
     run()
