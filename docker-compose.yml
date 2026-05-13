@@ -1,0 +1,7 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ${CV_FILE:-./cv/base_cv.txt}:/app/cv/base_cv.txt:ro
