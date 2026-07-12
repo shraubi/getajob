@@ -184,3 +184,16 @@ docker compose up -d --build
 ### Dependencies
 
 `requirements.txt` is the lightweight default used by local development, CI, Docker, and automatic deployment. `requirements-legacy.txt` layers the old LLM/RAG dependencies on top and is only needed when running with `TOKEN_FREE_MODE=false`.
+
+
+## Generic linked job pages
+
+When a Telegram message contains a public HTTP(S) URL, the bot treats the linked page—not the Telegram preview—as the source of truth. It validates redirect targets, limits redirects/page size/time, rejects private-network destinations, and parses in this order:
+
+1. Schema.org JSON-LD `JobPosting`
+2. OpenGraph and standard metadata
+3. Semantic `h1`, `main`, or `article` content
+
+Apply/contact targets are discovered generically from forms, resume/CV fields, and link/button labels such as apply, application, submit, contact, send CV, and their common Russian equivalents. There are no per-site CSS selector tables.
+
+The response includes the detected page category, final fetched URL, apply/contact URL when found, classification, selected resume, and generated message. Expired pages (HTTP 404/410) are reported and are not classified from Telegram preview text.
