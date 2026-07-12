@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 def _bool_env(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).casefold() in {"1", "true", "yes", "on"}
 
@@ -14,6 +13,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 YOUR_CHAT_ID = int(os.environ["YOUR_CHAT_ID"])
 TOKEN_FREE_MODE = _bool_env("TOKEN_FREE_MODE")
 RESUME_DIR = Path(os.environ.get("RESUME_DIR", "data/resumes"))
+DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "data/getajob.sqlite3"))
 
 # Optional legacy LLM path.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
