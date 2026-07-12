@@ -32,6 +32,14 @@ class TokenFreeFlowTests(unittest.TestCase):
     def test_classifies_scanned_resume_from_filename(self, _extract):
         self.assertEqual(classify_resume(Path("python_backend.pdf")), "backend_python")
 
+    @patch("token_free.extract_resume_text", return_value="")
+    def test_splits_camel_case_filename_and_logs_scores(self, _extract):
+        with self.assertLogs("token_free", level="INFO") as logs:
+            direction = classify_resume(Path("Ekaterina_Tuganova_DataEngineer_v2.pdf"))
+        self.assertEqual(direction, "data_engineering")
+        self.assertIn("extracted_chars=0", logs.output[0])
+        self.assertIn("scores=", logs.output[0])
+
     @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
     def test_discovers_and_selects_resume(self, _extract):
         with tempfile.TemporaryDirectory() as directory:
