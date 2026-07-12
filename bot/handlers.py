@@ -1,9 +1,12 @@
 import logging
+from dataclasses import replace
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 import config
+from hirify_client import HirifyAuthError, HirifyClient, is_hirify_job_url
+from jobs_store import save_fetched_job
 from storage.state import delete_pending, get_pending, save_pending
 from job_page import JobPageError, extract_first_url, fetch_job_from_message
 from token_free import (
@@ -24,23 +27,36 @@ async def _notify(ctx, text: str, **kwargs):
 async def _handle_token_free(ctx, text: str) -> None:
     parsed_page = None
     try:
-        extract_first_url(text)
+        source_url = extract_first_url(text)
     except JobPageError:
-        pass
-    else:
+        source_url = ""
+
+    if source_url:
         await _notify(ctx, "Fetching and parsing the linked job page...")
         try:
             parsed_page = await fetch_job_from_message(text)
-        except JobPageError as exc:
-            logger.warning("Job page parsing failed: %s", exc)
-            await _notify(ctx, f"Could not parse the linked job page: {exc}")
+            if is_hirify_job_url(parsed_page.fetched_url):
+                if not config.HIRIFY_EMAIL or not config.HIRIFY_PASSWORD:
+                    raise HirifyAuthError("Hirify login is not configured")
+                async with HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD) as client:
+                    contact = await client.get_contact(parsed_page.fetched_url)
+                if contact:
+                    parsed_page = replace(
+                        parsed_page,
+                        source_category="telegram_contact" if contact.kind == "telegram" else "external_application_url",
+                        apply_url=contact.target_url,
+                        contact_kind=contact.kind,
+                        contact_value=contact.value,
+                    )
+        except (JobPageError, HirifyAuthError) as exc:
+            logger.warning("Linked job processing failed: %s", exc)
+            await _notify(ctx, f"Could not process the linked job: {exc}")
             return
 
     try:
         draft = (
             build_application_for_vacancy(parsed_page.vacancy, config.RESUME_DIR)
-            if parsed_page
-            else build_application(text, config.RESUME_DIR)
+            if parsed_page else build_application(text, config.RESUME_DIR)
         )
     except UnknownDirectionError:
         await _notify(ctx, "I could not confidently classify the fetched job.")
@@ -50,14 +66,25 @@ async def _handle_token_free(ctx, text: str) -> None:
         await _notify(ctx, f"{exc}\nUpload PDF resumes to the VM resume directory.")
         return
 
+    job_id = (
+        save_fetched_job(config.JOBS_DB_PATH, parsed_page, draft.direction, draft.resume_path.name)
+        if parsed_page else ""
+    )
+    logger.info(
+        "Parsed job id=%s source=%s direction=%s title=%r resume=%s",
+        job_id,
+        parsed_page.source_category if parsed_page else "telegram_message",
+        draft.direction,
+        draft.vacancy.title,
+        draft.resume_path.name,
+    )
     summary = []
     if parsed_page:
-        summary.extend((
-            f"Source category: {parsed_page.source_category}",
-            f"Page: {parsed_page.fetched_url}",
-        ))
+        summary.extend((f"Job ID: {job_id}", f"Source: {parsed_page.source_category}"))
+        if parsed_page.contact_kind:
+            summary.append(f"Contact: {parsed_page.contact_kind}:{parsed_page.contact_value}")
         if parsed_page.apply_url:
-            summary.append(f"Apply/contact: {parsed_page.apply_url}")
+            summary.append(f"Apply: {parsed_page.apply_url}")
     summary.extend((
         f"Direction: {draft.direction}",
         f"Role: {draft.vacancy.title}",
@@ -72,6 +99,7 @@ async def _handle_token_free(ctx, text: str) -> None:
             caption=f"Selected resume: {draft.direction}",
         )
     await _notify(ctx, f"Recruiter message:\n\n{draft.message}")
+
 
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
