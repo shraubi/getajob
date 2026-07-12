@@ -5,6 +5,7 @@ __pycache__/
 ca-certificates.crt
 storage/chroma_db/
 storage/jobs.db*
+storage/hirify_state.json
 storage/telegram_sender.session*
 logs/applications.jsonl
 data/resumes/*
