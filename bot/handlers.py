@@ -32,7 +32,12 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         try:
             parsed_page = await fetch_job_from_message(source_url)
             if is_hirify_job_url(parsed_page.fetched_url):
-                async with HirifyClient(config.HIRIFY_STATE_PATH) as client:
+                async with HirifyClient(
+                    config.HIRIFY_EMAIL,
+                    config.HIRIFY_PASSWORD,
+                    config.HIRIFY_STATE_PATH,
+                    browser_executable=config.HIRIFY_BROWSER_EXECUTABLE,
+                ) as client:
                     contact = await client.get_contact(parsed_page.fetched_url)
                 if contact:
                     parsed_page = replace(
@@ -62,7 +67,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     ) if parsed_page else ""
     logger.info(
         "Parsed job id=%s source=%s direction=%s title=%r resume=%s",
-        job_id, parsed_page.source_category if parsed_page else "telegram_message", draft.direction,
+        job_id, parsed_page.source_category if parsed_page else draft.vacancy.source_category, draft.direction,
         draft.vacancy.title, draft.resume_path.name,
     )
     summary = []
