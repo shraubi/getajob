@@ -11,7 +11,7 @@ from classifier import classify, score_directions
 logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>]+")
-_SALARY_RE = re.compile(r"(?:\d[\d\s.,]*[-â€“]\s*)?\d[\d\s.,]*\s*(?:EUR|USD|GBP|\u20ac|\$|\u00a3|\u20bd|RUB)", re.I)
+_SALARY_RE = re.compile(r"(?:\d[\d\s.,]*[-–]\s*)?\d[\d\s.,]*\s*(?:EUR|USD|GBP|\u20ac|\$|\u00a3|\u20bd|RUB)", re.I)
 _SKILLS_PREFIXES = ("skills:", "\u043d\u0430\u0432\u044b\u043a\u0438:")
 _SUBSCRIPTION_PREFIX = "\u043f\u043e \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0435:"
 _REMOTE_WORDS = {"remote", "\u0443\u0434\u0430\u043b\u0435\u043d\u043d\u043e", "\u0443\u0434\u0430\u043b\u0451\u043d\u043d\u043e"}
@@ -188,9 +188,9 @@ def render_message(vacancy: Vacancy, direction: str) -> str:
 
 def render_telegram_message(vacancy_url: str) -> str:
     return (
-        "ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ Ð²Ð¾Ñ‚ Ð½Ð° ÑÑ‚Ñƒ Ð²Ð°ÐºÐ°Ð½ÑÐ¸ÑŽ:\n"
+        "Приветствую, хочу откликнуться вот на эту вакансию:\n"
         f'"{vacancy_url}"\n'
-        "Ð ÐµÐ·ÑŽÐ¼Ðµ Ð¿Ñ€Ð¸ÐºÑ€ÐµÐ¿Ð»ÑÑŽ. Ð‘ÑƒÐ´Ñƒ Ñ€Ð°Ð´Ð° Ð¿Ð¾Ð¾Ð±Ñ‰Ð°Ñ‚ÑŒÑÑ Ð¿Ð¾Ð´Ñ€Ð¾Ð±Ð½ÐµÐµ"
+        "Резюме прикрепляю. Буду рада пообщаться подробнее"
     )
 
 
@@ -218,4 +218,3 @@ def build_application_for_vacancy(vacancy: Vacancy, resume_dir: Path) -> Applica
 
 def build_application(text: str, resume_dir: Path) -> ApplicationDraft:
     return build_application_for_vacancy(parse_vacancy(text), resume_dir)
-
