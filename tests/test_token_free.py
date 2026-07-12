@@ -82,7 +82,8 @@ class TokenFreeFlowTests(unittest.TestCase):
             )
             self.assertEqual(draft.direction, "backend_python")
             self.assertEqual(draft.resume_path, resume)
-            self.assertIn("Acme", draft.message)
+            self.assertEqual(draft.vacancy.company, "Unknown company")
+            self.assertNotIn("Unknown company", draft.message)
 
 
 if __name__ == "__main__":
