@@ -32,12 +32,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         try:
             parsed_page = await fetch_job_from_message(source_url)
             if is_hirify_job_url(parsed_page.fetched_url):
-                async with HirifyClient(
-                    config.HIRIFY_EMAIL,
-                    config.HIRIFY_PASSWORD,
-                    config.HIRIFY_STATE_PATH,
-                    browser_executable=config.HIRIFY_BROWSER_EXECUTABLE,
-                ) as client:
+                async with HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD) as client:
                     contact = await client.get_contact(parsed_page.fetched_url)
                 if contact:
                     parsed_page = replace(
