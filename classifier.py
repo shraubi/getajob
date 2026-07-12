@@ -45,6 +45,11 @@ _ROLE_MARKERS = {
     ),
 }
 
+_UNSUPPORTED_TITLE_STACKS = (
+    "typescript", "javascript", "nestjs", "node js", "nodejs",
+    "android", "kotlin", "ios", "swift", "java", "golang", "dotnet", "net developer", "c sharp",
+)
+
 
 def _normalize(value: str) -> str:
     value = value.casefold().replace("ё", "е")
@@ -69,12 +74,18 @@ def score_directions(
 
 def classify(title: str, description: str, weights: Mapping[str, Mapping[str, int]] = DEFAULT_WEIGHTS) -> str:
     scores = score_directions(title, description, weights)
+    normalized_title = _normalize(title)
     combined = _normalize(f"{title} {description}")
     eligible = {
         direction for direction, markers in _ROLE_MARKERS.items()
         if any(_normalize(marker) in combined for marker in markers)
     }
     eligible.update(direction for direction in scores if direction not in _ROLE_MARKERS)
+    if any(_normalize(marker) in normalized_title for marker in _UNSUPPORTED_TITLE_STACKS):
+        eligible = {
+            direction for direction in eligible
+            if any(_normalize(marker) in normalized_title for marker in _ROLE_MARKERS.get(direction, ()))
+        }
     eligible_scores = {direction: score for direction, score in scores.items() if direction in eligible}
     if not eligible_scores or max(eligible_scores.values()) == 0:
         return "other"
