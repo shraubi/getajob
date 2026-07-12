@@ -42,6 +42,8 @@ class ParsedJobPage:
     source_category: str
     apply_url: str
     fetched_url: str
+    contact_kind: str = ""
+    contact_value: str = ""
 
 
 def extract_first_url(message: str) -> str:
