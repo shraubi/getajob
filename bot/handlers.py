@@ -5,7 +5,13 @@ from telegram.ext import ContextTypes
 
 import config
 from storage.state import delete_pending, get_pending, save_pending
-from token_free import ResumeNotFoundError, UnknownDirectionError, build_application
+from job_page import JobPageError, extract_first_url, fetch_job_from_message
+from token_free import (
+    ResumeNotFoundError,
+    UnknownDirectionError,
+    build_application,
+    build_application_for_vacancy,
+)
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -16,20 +22,48 @@ async def _notify(ctx, text: str, **kwargs):
 
 
 async def _handle_token_free(ctx, text: str) -> None:
+    parsed_page = None
     try:
-        draft = build_application(text, config.RESUME_DIR)
+        extract_first_url(text)
+    except JobPageError:
+        pass
+    else:
+        await _notify(ctx, "Fetching and parsing the linked job page...")
+        try:
+            parsed_page = await fetch_job_from_message(text)
+        except JobPageError as exc:
+            logger.warning("Job page parsing failed: %s", exc)
+            await _notify(ctx, f"Could not parse the linked job page: {exc}")
+            return
+
+    try:
+        draft = (
+            build_application_for_vacancy(parsed_page.vacancy, config.RESUME_DIR)
+            if parsed_page
+            else build_application(text, config.RESUME_DIR)
+        )
     except UnknownDirectionError:
-        await _notify(ctx, "I could not confidently choose a resume. Add a clearer role title or description.")
+        await _notify(ctx, "I could not confidently classify the fetched job.")
         return
     except ResumeNotFoundError as exc:
         logger.warning("Token-free resume missing: %s", exc)
         await _notify(ctx, f"{exc}\nUpload PDF resumes to the VM resume directory.")
         return
 
-    await _notify(
-        ctx,
-        f"Direction: {draft.direction}\nRole: {draft.vacancy.title}\nCompany: {draft.vacancy.company}",
-    )
+    summary = []
+    if parsed_page:
+        summary.extend((
+            f"Source category: {parsed_page.source_category}",
+            f"Page: {parsed_page.fetched_url}",
+        ))
+        if parsed_page.apply_url:
+            summary.append(f"Apply/contact: {parsed_page.apply_url}")
+    summary.extend((
+        f"Direction: {draft.direction}",
+        f"Role: {draft.vacancy.title}",
+        f"Company: {draft.vacancy.company}",
+    ))
+    await _notify(ctx, "\n".join(summary))
     with draft.resume_path.open("rb") as resume:
         await ctx.bot.send_document(
             chat_id=config.YOUR_CHAT_ID,
@@ -38,7 +72,6 @@ async def _handle_token_free(ctx, text: str) -> None:
             caption=f"Selected resume: {draft.direction}",
         )
     await _notify(ctx, f"Recruiter message:\n\n{draft.message}")
-
 
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
