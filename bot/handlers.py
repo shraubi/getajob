@@ -5,7 +5,8 @@ from telegram.ext import ContextTypes
 
 import config
 from storage.state import delete_pending, get_pending, save_pending
-from token_free import ResumeNotFoundError, UnknownDirectionError, build_application
+from jobs_store import save_job
+from token_free import ResumeNotFoundError, UnknownDirectionError, build_application, format_vacancy_summary
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -26,10 +27,13 @@ async def _handle_token_free(ctx, text: str) -> None:
         await _notify(ctx, f"{exc}\nUpload PDF resumes to the VM resume directory.")
         return
 
-    await _notify(
-        ctx,
-        f"Direction: {draft.direction}\nRole: {draft.vacancy.title}\nCompany: {draft.vacancy.company}",
+    job_id = save_job(config.JOBS_DB_PATH, draft.vacancy, draft.direction, draft.resume_path.name)
+    logger.info(
+        "Parsed job id=%s source=%s direction=%s title=%r resume=%s",
+        job_id, draft.vacancy.source_category, draft.direction,
+        draft.vacancy.title, draft.resume_path.name,
     )
+    await _notify(ctx, format_vacancy_summary(draft.vacancy, draft.direction, job_id))
     with draft.resume_path.open("rb") as resume:
         await ctx.bot.send_document(
             chat_id=config.YOUR_CHAT_ID,
