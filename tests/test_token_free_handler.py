@@ -70,12 +70,16 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
             resume.write_bytes(b"pdf")
             vacancy = Vacancy("Python Engineer", "Unknown company", "Python APIs", "https://hirify.me/jobs/1-role")
             page = ParsedJobPage(vacancy, "job_page", "", vacancy.url)
-            draft = ApplicationDraft(vacancy, "backend_python", resume, "old generic text")
             ctx = SimpleNamespace(bot=FakeBot())
             with patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
                  patch("bot.handlers.is_hirify_job_url", return_value=True), \
                  patch("bot.handlers._get_hirify_client", return_value=FakeHirifyClient()), \
-                 patch("bot.handlers.build_application_for_vacancy", return_value=draft), \
+                 patch(
+                     "bot.handlers.build_application_for_vacancy",
+                     side_effect=lambda enriched, _resume_dir: ApplicationDraft(
+                         enriched, "backend_python", resume, "old generic text"
+                     ),
+                 ), \
                  patch("bot.handlers.save_fetched_job", return_value="a" * 64):
                 await _handle_token_free(ctx, vacancy.url)
             summary = next(item for item in ctx.bot.messages if "Contact: @brandiumsu" in item["text"])
