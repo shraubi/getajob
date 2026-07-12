@@ -184,3 +184,22 @@ docker compose up -d --build
 ### Dependencies
 
 `requirements.txt` is the lightweight default used by local development, CI, Docker, and automatic deployment. `requirements-legacy.txt` layers the old LLM/RAG dependencies on top and is only needed when running with `TOKEN_FREE_MODE=false`.
+
+
+## Parsed job storage
+
+Token-free mode categorizes incoming sources (`telegram_lead`, `telegram_message`, `job_board`, `ats`, `company_careers`, or `web_page`) and stores every successfully matched job in SQLite. Docker Compose persists the database at `storage/jobs.db` on the VM.
+
+A Telegram lead is parsed into title, explicit company (when present), salary, location, work format, employment, seniority, language, skills, URL, classification, and selected resume. Repeated copies update the same stable job record.
+
+Inspect recent jobs on the VM:
+
+```bash
+python - <<'PY'
+import sqlite3
+con = sqlite3.connect('storage/jobs.db')
+for row in con.execute('SELECT substr(id,1,12), source_category, direction, title, salary FROM jobs ORDER BY last_seen_at DESC LIMIT 20'):
+    print(row)
+con.close()
+PY
+```
