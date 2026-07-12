@@ -10,7 +10,7 @@ os.environ.setdefault("YOUR_CHAT_ID", "1")
 
 from bot.handlers import _handle_token_free
 from job_page import JobPageError, ParsedJobPage
-from token_free import ApplicationDraft, Vacancy
+from token_free import ApplicationDraft, UnknownDirectionError, Vacancy
 
 
 class FakeBot:
@@ -37,6 +37,21 @@ class FakeHirifyClient:
 
 
 class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsupported_role_stops_without_resume_or_send_button(self):
+        vacancy = Vacancy(
+            "Android Developer (Kotlin)", "VK", "Android mobile development with Kotlin",
+            "https://hirify.me/jobs/732081-android-developer-kotlin",
+        )
+        page = ParsedJobPage(vacancy, "structured_job_page", "", vacancy.url)
+        ctx = SimpleNamespace(bot=FakeBot())
+        with patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
+             patch("bot.handlers.is_hirify_job_url", return_value=False), \
+             patch("bot.handlers.build_application_for_vacancy", side_effect=UnknownDirectionError):
+            await _handle_token_free(ctx, vacancy.url)
+        self.assertEqual(ctx.bot.documents, [])
+        self.assertIn("does not match any of the available resumes", ctx.bot.messages[-1]["text"])
+        self.assertNotIn("reply_markup", ctx.bot.messages[-1])
+
     async def test_plain_job_posting_does_not_require_source_category_on_vacancy(self):
         with tempfile.TemporaryDirectory() as directory:
             resume = Path(directory) / "resume.pdf"
