@@ -43,9 +43,9 @@ class JobParsingTests(unittest.TestCase):
         url = "https://hirify.me/jobs/732017-application-backend-engineer-python"
         self.assertEqual(
             render_telegram_message(url),
-            "ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ Ð²Ð¾Ñ‚ Ð½Ð° ÑÑ‚Ñƒ Ð²Ð°ÐºÐ°Ð½ÑÐ¸ÑŽ:\n"
+            "Приветствую, хочу откликнуться вот на эту вакансию:\n"
             f'"{url}"\n'
-            "Ð ÐµÐ·ÑŽÐ¼Ðµ Ð¿Ñ€Ð¸ÐºÑ€ÐµÐ¿Ð»ÑÑŽ. Ð‘ÑƒÐ´Ñƒ Ñ€Ð°Ð´Ð° Ð¿Ð¾Ð¾Ð±Ñ‰Ð°Ñ‚ÑŒÑÑ Ð¿Ð¾Ð´Ñ€Ð¾Ð±Ð½ÐµÐµ",
+            "Резюме прикрепляю. Буду рада пообщаться подробнее",
         )
 
     def test_persists_and_updates_parsed_job(self):
@@ -62,4 +62,3 @@ class JobParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
