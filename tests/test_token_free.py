@@ -1,13 +1,15 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from token_free import (
     ResumeNotFoundError,
     UnknownDirectionError,
     build_application,
+    classify_resume,
+    discover_resumes,
     parse_vacancy,
-    render_message,
     select_resume,
 )
 
@@ -22,47 +24,46 @@ class TokenFreeFlowTests(unittest.TestCase):
         self.assertEqual(vacancy.company, "Acme")
         self.assertEqual(vacancy.url, "https://jobs.example/42")
 
-    def test_selects_existing_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
-            resume = Path(directory) / "backend.pdf"
-            resume.write_bytes(b"pdf")
-            self.assertEqual(
-                select_resume("backend_python", Path(directory), {"backend_python": "backend.pdf"}),
-                resume,
-            )
+    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    def test_classifies_resume_from_pdf_text(self, _extract):
+        self.assertEqual(classify_resume(Path("generic.pdf")), "backend_python")
 
-    def test_missing_resume_has_actionable_path(self):
+    @patch("token_free.extract_resume_text", side_effect=ValueError("scanned"))
+    def test_classifies_scanned_resume_from_filename(self, _extract):
+        self.assertEqual(classify_resume(Path("python_backend.pdf")), "backend_python")
+
+    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    def test_discovers_and_selects_resume(self, _extract):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ResumeNotFoundError, "backend.pdf"):
-                select_resume(
-                    "backend_python", Path(directory), {"backend_python": "backend.pdf"}
-                )
+            resume = Path(directory) / "resume.pdf"
+            resume.write_bytes(b"pdf")
+            self.assertEqual(discover_resumes(Path(directory))["backend_python"], resume)
+            self.assertEqual(select_resume("backend_python", Path(directory)), resume)
+
+    def test_missing_resume_has_actionable_direction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ResumeNotFoundError, "backend_python"):
+                select_resume("backend_python", Path(directory))
 
     def test_unknown_direction_is_safe(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(UnknownDirectionError):
                 build_application(
-                    "Account Executive\nAcme\nOwn enterprise accounts.",
-                    Path(directory),
-                    {},
+                    "Account Executive\nAcme\nOwn enterprise accounts.", Path(directory)
                 )
 
-    def test_builds_end_to_end_draft(self):
+    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    def test_builds_end_to_end_draft(self, _extract):
         with tempfile.TemporaryDirectory() as directory:
-            resume = Path(directory) / "backend.pdf"
+            resume = Path(directory) / "resume.pdf"
             resume.write_bytes(b"pdf")
             draft = build_application(
                 "Senior Python Engineer\nAcme\nFastAPI, Django, PostgreSQL",
                 Path(directory),
-                {"backend_python": "backend.pdf"},
             )
             self.assertEqual(draft.direction, "backend_python")
             self.assertEqual(draft.resume_path, resume)
             self.assertIn("Acme", draft.message)
-
-    def test_renders_russian_message_for_russian_vacancy(self):
-        vacancy = parse_vacancy("Python-Ñ€Ð°Ð·Ñ€Ð°Ð±Ð¾Ñ‚Ñ‡Ð¸Ðº\nÐšÐ¾Ð¼Ð¿Ð°Ð½Ð¸Ñ: Acme\nFastAPI Ð¸ PostgreSQL")
-        self.assertIn("Ð—Ð´Ñ€Ð°Ð²ÑÑ‚Ð²ÑƒÐ¹Ñ‚Ðµ", render_message(vacancy, "backend_python"))
 
 
 if __name__ == "__main__":

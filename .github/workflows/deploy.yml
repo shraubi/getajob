@@ -8,7 +8,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to VM
+      - name: Deploy lightweight bot to VM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
@@ -17,4 +17,6 @@ jobs:
           script: |
             cd ${{ secrets.APP_DIR }}
             git pull origin main
-            docker compose up --build -d
+            docker compose build --pull bot
+            docker compose up -d bot
+            docker image prune -f
