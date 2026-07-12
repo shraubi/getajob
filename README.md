@@ -89,12 +89,12 @@ Every processed vacancy is appended to `logs/applications.jsonl`:
 
 ```bash
 # 1. Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt  # lightweight token-free development
+# For the legacy LLM/RAG path instead: pip install -r requirements-legacy.txt
 
 # 2. Configure
 cp .env.example .env
-# Edit .env — set TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, YOUR_CHAT_ID
-# Replace cv/base_cv.txt with your real CV (or set CV= in .env)
+# Set TELEGRAM_BOT_TOKEN and YOUR_CHAT_ID
 
 # 3. Run
 python main.py
@@ -140,7 +140,7 @@ getajob/
 
 ## Token-free Telegram mode
 
-This mode accepts a pasted vacancy, classifies it with local weighted rules, selects a PDF résumé from the VM, and returns the résumé plus a deterministic recruiter message. It makes no LLM or embedding calls.
+This mode accepts a pasted vacancy, classifies it with local weighted rules, automatically classifies every PDF resume found on the VM from its extracted text and filename, and returns the best matching resume plus a deterministic recruiter message. It makes no LLM or embedding calls.
 
 Use this input format for the best metadata extraction:
 
@@ -156,10 +156,9 @@ Deploy private résumés on the VM (they are gitignored):
 
 ```text
 data/resumes/
-├── backend_python.pdf
-├── data_engineering.pdf
-├── ml_engineering.pdf
-└── devops.pdf
+├── my_python_cv.pdf
+├── platform_resume.pdf
+└── data_cv.pdf
 ```
 
 Configure and start:
@@ -172,7 +171,7 @@ RESUME_DIR=data/resumes
 python main.py
 ```
 
-The bot fails safely when classification is unknown or a configured résumé is missing. Set `TOKEN_FREE_MODE=false` to retain the legacy LLM/RAG flow during rollout.
+PDF filenames are not configuration: normal descriptive names help as a fallback for scanned PDFs, while text-based PDFs are classified from their first five pages. The bot fails safely when the vacancy is unknown or no uploaded PDF matches its direction. Set `TOKEN_FREE_MODE=false` to retain the legacy LLM/RAG flow during rollout.
 
 
 For the Docker Compose deployment, put the PDFs in `data/resumes/` on the VM. Compose mounts that directory read-only at `/app/data/resumes`. Rebuild and restart with:
@@ -180,3 +179,8 @@ For the Docker Compose deployment, put the PDFs in `data/resumes/` on the VM. Co
 ```bash
 docker compose up -d --build
 ```
+
+
+### Dependencies
+
+`requirements.txt` is the lightweight default used by local development, CI, Docker, and automatic deployment. `requirements-legacy.txt` layers the old LLM/RAG dependencies on top and is only needed when running with `TOKEN_FREE_MODE=false`.
