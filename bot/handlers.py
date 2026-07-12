@@ -48,8 +48,12 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             if is_hirify_job_url(parsed_page.fetched_url):
                 contact = await _get_hirify_client().get_contact(parsed_page.fetched_url)
                 if contact:
+                    vacancy = parsed_page.vacancy
+                    if vacancy.company == "Unknown company" and contact.company_title:
+                        vacancy = replace(vacancy, company=contact.company_title)
                     parsed_page = replace(
                         parsed_page,
+                        vacancy=vacancy,
                         source_category="telegram_contact" if contact.kind == "telegram" else "external_application_url",
                         apply_url=contact.target_url,
                         contact_kind=contact.kind,
@@ -102,7 +106,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             InlineKeyboardButton("Send to recruiter", callback_data=f"apply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
-    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
+    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message — resume only."
     await _notify(ctx, preview, reply_markup=confirmation)
 
 
@@ -229,4 +233,3 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Data not found. Please try again.")
             return
         await query.edit_message_text(f"Edit and send back to me:\n\n{payload['tg_message']}")
-
