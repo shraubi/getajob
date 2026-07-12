@@ -12,18 +12,10 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 YOUR_CHAT_ID = int(os.environ["YOUR_CHAT_ID"])
-
-# Token-free production path. Real resume files live on the VM and are never committed.
 TOKEN_FREE_MODE = _bool_env("TOKEN_FREE_MODE")
 RESUME_DIR = Path(os.environ.get("RESUME_DIR", "data/resumes"))
-RESUME_FILES = {
-    "backend_python": os.environ.get("RESUME_BACKEND_PYTHON", "backend_python.pdf"),
-    "data_engineering": os.environ.get("RESUME_DATA_ENGINEERING", "data_engineering.pdf"),
-    "ml_engineering": os.environ.get("RESUME_ML_ENGINEERING", "ml_engineering.pdf"),
-    "devops": os.environ.get("RESUME_DEVOPS", "devops.pdf"),
-}
 
-# Legacy LLM path. Keys are optional until that path is used.
+# Optional legacy LLM path.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SCORE_MODEL = os.environ.get("SCORE_MODEL", "claude-haiku-4-5-20251001")
 GENERATE_MODEL = os.environ.get("GENERATE_MODEL", "claude-sonnet-4-6")
