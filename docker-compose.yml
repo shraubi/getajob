@@ -3,6 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      RESUME_DIR: /app/data/resumes
     volumes:
       - ${CV_FILE:-./cv/base_cv.txt}:/app/cv/base_cv.txt:ro
-      - ${RESUME_DIR:-./data/resumes}:/app/data/resumes:ro
+      - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
