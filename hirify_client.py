@@ -1,16 +1,12 @@
-"""Hirify contacts adapter backed by Playwright browser storage state."""
+"""Authenticated Hirify contacts adapter using Laravel Sanctum SPA auth."""
 
 from __future__ import annotations
 
-import json
-import asyncio
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import httpx
-from browser_auth import BrowserAuthError, login_hirify
 
 _API_BASE = "https://api.hirify.me"
 _SLUG_RE = re.compile(r"^/jobs/([^/?#]+)")
@@ -32,7 +28,9 @@ class Contact:
 
     @property
     def target_url(self) -> str:
-        return f"https://t.me/{self.value.lstrip('@')}" if self.kind == "telegram" else self.value if self.kind == "url" else ""
+        if self.kind == "telegram":
+            return f"https://t.me/{self.value.lstrip('@')}"
+        return self.value if self.kind == "url" else ""
 
 
 def is_hirify_job_url(url: str) -> bool:
@@ -54,76 +52,15 @@ def parse_contacts_response(payload: dict) -> Contact | None:
     return None
 
 
-def load_browser_cookies(state_path: Path) -> tuple[httpx.Cookies, str]:
-    try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HirifyAuthError("Hirify browser session is missing") from exc
-    cookies = httpx.Cookies()
-    xsrf = ""
-    for item in payload.get("cookies", []):
-        name = str(item.get("name", ""))
-        value = str(item.get("value", ""))
-        domain = str(item.get("domain", "")).lstrip(".") or "hirify.me"
-        path = str(item.get("path", "/"))
-        if name and value:
-            cookies.set(name, value, domain=domain, path=path)
-            if name == "XSRF-TOKEN":
-                xsrf = unquote(value)
-    if not xsrf:
-        raise HirifyAuthError("Hirify browser session has no XSRF token")
-    return cookies, xsrf
-
-
 class HirifyClient:
-    def __init__(
-        self,
-        email: str,
-        password: str,
-        state_path: Path,
-        *,
-        browser_executable: str = "/usr/bin/chromium",
-        transport: httpx.AsyncBaseTransport | None = None,
-        login=login_hirify,
-    ):
+    def __init__(self, email: str, password: str, *, transport: httpx.AsyncBaseTransport | None = None):
         self.email = email
         self.password = password
-        self.state_path = state_path
-        self.browser_executable = browser_executable
-        self.transport = transport
-        self.login = login
-        self._client = None
-        self._xsrf = ""
-        self._auth_lock = asyncio.Lock()
-
-    async def _open_client(self, refresh: bool = False) -> None:
-        async with self._auth_lock:
-            if self._client is not None and not refresh:
-                return
-            if self._client is not None:
-                await self._client.aclose()
-                self._client = None
-            if refresh or not self.state_path.is_file():
-                try:
-                    await self.login(self.email, self.password, self.state_path, self.browser_executable)
-                except BrowserAuthError as exc:
-                    raise HirifyAuthError(str(exc)) from exc
-            try:
-                cookies, self._xsrf = load_browser_cookies(self.state_path)
-            except HirifyAuthError:
-                if refresh:
-                    raise
-                try:
-                    await self.login(self.email, self.password, self.state_path, self.browser_executable)
-                except BrowserAuthError as exc:
-                    raise HirifyAuthError(str(exc)) from exc
-                cookies, self._xsrf = load_browser_cookies(self.state_path)
-            self._client = httpx.AsyncClient(
+        self._client = httpx.AsyncClient(
             base_url=_API_BASE,
-            cookies=cookies,
             follow_redirects=True,
             timeout=15.0,
-            transport=self.transport,
+            transport=transport,
             headers={"Accept": "application/json", "Origin": "https://hirify.me", "Referer": "https://hirify.me/"},
         )
 
@@ -131,29 +68,44 @@ class HirifyClient:
         return self
 
     async def __aexit__(self, *_):
-        if self._client is not None:
-            await self._client.aclose()
+        await self._client.aclose()
+
+    async def login(self) -> None:
+        csrf = await self._client.get("/sanctum/csrf-cookie")
+        if csrf.is_error:
+            raise HirifyAuthError(f"Hirify CSRF request failed (HTTP {csrf.status_code})")
+        token = self._client.cookies.get("XSRF-TOKEN")
+        if not token:
+            raise HirifyAuthError("Hirify did not issue an XSRF token")
+        response = await self._client.post(
+            "/auth/login",
+            json={"email": self.email, "password": self.password},
+            headers={"X-XSRF-TOKEN": unquote(token)},
+        )
+        if response.status_code in {401, 419, 422}:
+            raise HirifyAuthError("Hirify login rejected the configured credentials")
+        if response.is_error:
+            raise HirifyAuthError(f"Hirify login failed (HTTP {response.status_code})")
+
+    async def _contact_response(self, slug: str) -> httpx.Response:
+        token = unquote(self._client.cookies.get("XSRF-TOKEN", ""))
+        return await self._client.post(
+            f"/api/vacancies/{slug}/contacts",
+            json={},
+            headers={"X-XSRF-TOKEN": token} if token else {},
+        )
 
     async def get_contact(self, job_url: str) -> Contact | None:
         parsed = urlparse(job_url)
         match = _SLUG_RE.match(parsed.path)
         if not is_hirify_job_url(job_url) or not match:
             return None
-        await self._open_client()
-        response = await self._client.post(
-            f"/api/vacancies/{match.group(1)}/contacts",
-            json={},
-            headers={"X-XSRF-TOKEN": self._xsrf},
-        )
+        response = await self._contact_response(match.group(1))
         if response.status_code in {401, 419}:
-            await self._open_client(refresh=True)
-            response = await self._client.post(
-                f"/api/vacancies/{match.group(1)}/contacts",
-                json={},
-                headers={"X-XSRF-TOKEN": self._xsrf},
-            )
+            await self.login()
+            response = await self._contact_response(match.group(1))
         if response.status_code in {401, 419}:
-            raise HirifyAuthError("Hirify login succeeded but the contacts session is unauthorized")
+            raise HirifyAuthError("Hirify session is unauthorized after login")
         if response.is_error:
             raise HirifyError(f"Hirify contacts request failed (HTTP {response.status_code})")
         return parse_contacts_response(response.json())
