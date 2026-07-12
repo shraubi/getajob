@@ -70,28 +70,35 @@ async def validate_public_url(url: str) -> None:
         raise UnsafeUrlError("Job URL resolves to a non-public network address")
 
 
-async def fetch_html(url: str) -> tuple[str, str]:
+async def fetch_html(url: str, transport: httpx.AsyncBaseTransport | None = None) -> tuple[str, str]:
     current = url
     headers = {"User-Agent": "getajob/1.0 (+public job page parser)", "Accept": "text/html,application/xhtml+xml"}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers=headers, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers=headers, follow_redirects=False, transport=transport) as client:
         for _ in range(_MAX_REDIRECTS + 1):
             await validate_public_url(current)
-            response = await client.get(current)
-            if response.status_code in {301, 302, 303, 307, 308}:
-                location = response.headers.get("location")
-                if not location:
-                    raise JobPageError("Redirect response did not include a destination")
-                current = urljoin(current, location)
-                continue
-            if response.status_code in {404, 410}:
-                raise PageUnavailableError(f"Job page is no longer available (HTTP {response.status_code})")
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if "html" not in content_type.casefold():
-                raise JobPageError(f"Expected an HTML job page, got {content_type or 'unknown content type'}")
-            if len(response.content) > _MAX_BYTES:
-                raise JobPageError("Job page is too large to parse safely")
-            return response.text, str(response.url)
+            async with client.stream("GET", current) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise JobPageError("Redirect response did not include a destination")
+                    current = urljoin(current, location)
+                    continue
+                if response.status_code in {404, 410}:
+                    raise PageUnavailableError(f"Job page is no longer available (HTTP {response.status_code})")
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "html" not in content_type.casefold():
+                    raise JobPageError(f"Expected an HTML job page, got {content_type or 'unknown content type'}")
+                declared_size = response.headers.get("content-length")
+                if declared_size and int(declared_size) > _MAX_BYTES:
+                    raise JobPageError("Job page is too large to parse safely")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > _MAX_BYTES:
+                        raise JobPageError("Job page exceeded the safe download limit")
+                encoding = response.encoding or "utf-8"
+                return bytes(body).decode(encoding, errors="replace"), str(response.url)
     raise JobPageError(f"Job page exceeded {_MAX_REDIRECTS} redirects")
 
 
