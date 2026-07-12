@@ -1,10 +1,13 @@
 import tempfile
 import unittest
 import sys
+import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
+os.environ.setdefault("YOUR_CHAT_ID", "1")
 sys.modules.setdefault("dotenv", SimpleNamespace(load_dotenv=lambda: None))
 
 
@@ -36,7 +39,7 @@ sys.modules.setdefault("storage", storage_module)
 sys.modules.setdefault("storage.state", storage_state_module)
 
 import config
-from handlers import _handle_token_free, handle_callback
+from bot.handlers import _handle_token_free, handle_callback
 from hirify_client import Contact
 from job_page import ParsedJobPage
 from token_free import ApplicationDraft, Vacancy
@@ -103,9 +106,9 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             draft = ApplicationDraft(vacancy, "backend_python", resume, "old generic message")
 
             with (
-                patch("handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
-                patch("handlers._get_hirify_client", return_value=FakeHirifyClient()),
-                patch("handlers.build_application_for_vacancy", return_value=draft),
+                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("bot.handlers._get_hirify_client", return_value=FakeHirifyClient()),
+                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
             ):
@@ -118,7 +121,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(bot.documents), 1)
 
             preview = bot.messages[2]
-            self.assertIn("ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ", preview["text"])
+            self.assertIn("Приветствую, хочу откликнуться", preview["text"])
             self.assertIn(f'"{url}"', preview["text"])
             button_data = preview["reply_markup"].inline_keyboard[0][0].callback_data
             self.assertTrue(button_data.startswith("apply:"))
@@ -127,7 +130,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             update = SimpleNamespace(callback_query=query)
             FakeSender.calls.clear()
             with (
-                patch("handlers.TelegramSender", FakeSender),
+                patch("bot.handlers.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "TELEGRAM_API_ID", 1),
@@ -137,12 +140,12 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(FakeSender.calls[0][0], "artem_avsievich")
             self.assertEqual(FakeSender.calls[0][2], "backend.pdf")
-            self.assertIn("ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ", FakeSender.calls[0][1])
+            self.assertIn("Приветствую, хочу откликнуться", FakeSender.calls[0][1])
             self.assertIn("Sent to @artem_avsievich", query.edited)
 
             duplicate_query = FakeQuery(button_data)
             with (
-                patch("handlers.TelegramSender", FakeSender),
+                patch("bot.handlers.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
             ):
                 await handle_callback(SimpleNamespace(callback_query=duplicate_query), SimpleNamespace())
@@ -152,4 +155,3 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
