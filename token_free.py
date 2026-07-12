@@ -147,8 +147,7 @@ def render_message(vacancy: Vacancy, direction: str) -> str:
     )
 
 
-def build_application(text: str, resume_dir: Path) -> ApplicationDraft:
-    vacancy = parse_vacancy(text)
+def build_application_for_vacancy(vacancy: Vacancy, resume_dir: Path) -> ApplicationDraft:
     direction = classify(vacancy.title, vacancy.description)
     if direction == "other":
         raise UnknownDirectionError("Could not confidently classify this vacancy")
@@ -159,3 +158,7 @@ def build_application(text: str, resume_dir: Path) -> ApplicationDraft:
         resume_path=resume_path,
         message=render_message(vacancy, direction),
     )
+
+
+def build_application(text: str, resume_dir: Path) -> ApplicationDraft:
+    return build_application_for_vacancy(parse_vacancy(text), resume_dir)
