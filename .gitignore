@@ -5,3 +5,5 @@ __pycache__/
 ca-certificates.crt
 storage/chroma_db/
 logs/applications.jsonl
+data/resumes/*
+!data/resumes/.gitkeep
