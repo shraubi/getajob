@@ -17,8 +17,8 @@ from classifier import classify
 
 class TokenFreeFlowTests(unittest.TestCase):
     def test_matches_russian_ai_agent_role_to_ml_resume(self):
-        title = "Ð Ð°Ð·Ñ€Ð°Ð±Ð¾Ñ‚Ñ‡Ð¸Ðº Ð˜Ð˜-Ð°Ð³ÐµÐ½Ñ‚Ð¾Ð² (ÐœÐ°Ñ€ÐºÐµÑ‚Ð¸Ð½Ð³)"
-        description = "ÐÐ°Ð²Ñ‹ÐºÐ¸: ai, marketing, api, llm, automation, databases"
+        title = "Разработчик ИИ-агентов (Маркетинг)"
+        description = "Навыки: ai, marketing, api, llm, automation, databases"
         self.assertEqual(classify(title, description), "ml_engineering")
 
     def test_matches_python_backend_without_requiring_exact_title(self):
@@ -104,4 +104,3 @@ class TokenFreeFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
