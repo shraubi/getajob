@@ -1,6 +1,11 @@
 """One-time interactive authorization for the Telegram sender account."""
 
 import asyncio
+import sys
+from pathlib import Path
+
+# Direct execution sets sys.path to /app/scripts; add the repository root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
 from telegram_sender import TelegramSender
