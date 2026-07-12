@@ -7,6 +7,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, int]] = {
     "data_engineering": {"data engineer": 5, "airflow": 4, "spark": 4, "etl": 3, "data pipeline": 3, "dbt": 3, "kafka": 2, "warehouse": 2},
     "ml_engineering": {"machine learning": 5, "ml engineer": 5, "pytorch": 4, "tensorflow": 4, "mlops": 3, "model training": 3, "scikit-learn": 2},
     "devops": {"devops": 5, "kubernetes": 4, "terraform": 4, "helm": 3, "ci/cd": 3, "infrastructure": 2, "docker": 1},
+    "tech_support": {"technical support": 5, "tech support": 5, "support engineer": 4, "help desk": 4, "troubleshooting": 3, "ticketing": 2, "customer support": 2},
 }
 
 
