@@ -26,6 +26,7 @@ class Contact:
     kind: str
     value: str
     short_code: str = ""
+    company_title: str = ""
 
     @property
     def target_url(self) -> str:
@@ -40,16 +41,17 @@ def is_hirify_job_url(url: str) -> bool:
 
 
 def parse_contacts_response(payload: dict) -> Contact | None:
+    company_title = str(payload.get("company_title", "")).strip()
     for item in payload.get("contacts", []):
         kind = str(item.get("type", "")).casefold()
         value = str(item.get("value", "")).strip()
         short_code = str(item.get("short_code", "")).strip()
         if kind == "telegram" and re.fullmatch(r"@?[A-Za-z0-9_]{5,32}", value):
-            return Contact(kind, value.lstrip("@"), short_code)
+            return Contact(kind, value.lstrip("@"), short_code, company_title)
         if kind == "url" and value.startswith(("http://", "https://")):
-            return Contact(kind, value, short_code)
+            return Contact(kind, value, short_code, company_title)
         if kind in {"email", "phone"} and value:
-            return Contact(kind, value, short_code)
+            return Contact(kind, value, short_code, company_title)
     return None
 
 
@@ -129,4 +131,3 @@ class HirifyClient:
             contact = parse_contacts_response(response.json())
             self._contact_cache[slug] = contact
             return contact
-
