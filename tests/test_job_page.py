@@ -1,8 +1,10 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from job_page import UnsafeUrlError, extract_first_url, parse_job_html, validate_public_url
+import httpx
+
+from job_page import JobPageError, UnsafeUrlError, extract_first_url, fetch_html, parse_job_html, validate_public_url
 
 MESSAGE = """[Staff Data Engineer (Azure)](https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) (https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) in NDA"""
 
@@ -48,6 +50,23 @@ class JobPageTests(unittest.TestCase):
     def test_rejects_private_destinations(self, _resolve):
         with self.assertRaises(UnsafeUrlError):
             asyncio.run(validate_public_url("https://example.com/jobs/1"))
+
+    @patch("job_page.validate_public_url", new_callable=AsyncMock)
+    def test_rejects_declared_oversize_before_reading_body(self, _validate):
+        class ExplodingStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                raise AssertionError("oversize body should not be read")
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/html", "content-length": "2000001"},
+                stream=ExplodingStream(),
+                request=request,
+            )
+        )
+        with self.assertRaisesRegex(JobPageError, "too large"):
+            asyncio.run(fetch_html("https://example.com/jobs/1", transport=transport))
 
 
 if __name__ == "__main__":
