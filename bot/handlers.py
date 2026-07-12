@@ -9,12 +9,26 @@ from hirify_client import HirifyError, HirifyClient, is_hirify_job_url
 from job_page import JobPageError, extract_first_url, fetch_job_from_message
 from jobs_store import claim_job_for_send, get_job_by_prefix, mark_job_send_failed, mark_job_sent, save_fetched_job
 from storage.state import delete_pending, get_pending, save_pending
-from token_free import ResumeNotFoundError, UnknownDirectionError, build_application, build_application_for_vacancy
+from token_free import (
+    ResumeNotFoundError,
+    UnknownDirectionError,
+    build_application,
+    build_application_for_vacancy,
+    render_telegram_message,
+)
 from telegram_sender import TelegramSender, TelegramSenderError
 from telegram_input import telegram_message_url
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
+_hirify_client: HirifyClient | None = None
+
+
+def _get_hirify_client() -> HirifyClient:
+    global _hirify_client
+    if _hirify_client is None:
+        _hirify_client = HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD)
+    return _hirify_client
 
 
 async def _notify(ctx, text: str, **kwargs):
@@ -32,8 +46,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         try:
             parsed_page = await fetch_job_from_message(source_url)
             if is_hirify_job_url(parsed_page.fetched_url):
-                async with HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD) as client:
-                    contact = await client.get_contact(parsed_page.fetched_url)
+                contact = await _get_hirify_client().get_contact(parsed_page.fetched_url)
                 if contact:
                     parsed_page = replace(
                         parsed_page,
@@ -57,6 +70,9 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         await _notify(ctx, f"{exc}\nUpload PDF resumes to the VM resume directory.")
         return
 
+    if parsed_page and parsed_page.contact_kind == "telegram":
+        draft = replace(draft, message=render_telegram_message(parsed_page.fetched_url))
+
     job_id = save_fetched_job(
         config.JOBS_DB_PATH, parsed_page, draft.direction, draft.resume_path.name, draft.message
     ) if parsed_page else ""
@@ -67,10 +83,9 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     )
     summary = []
     if parsed_page:
-        summary.extend((f"Job ID: {job_id}", f"Source: {parsed_page.source_category}"))
-        if parsed_page.contact_kind:
-            summary.append(f"Contact: {parsed_page.contact_kind}:{parsed_page.contact_value}")
-        if parsed_page.apply_url:
+        if parsed_page.contact_kind == "telegram":
+            summary.append(f"Contact: @{parsed_page.contact_value.lstrip('@')}")
+        elif parsed_page.apply_url:
             summary.append(f"Apply: {parsed_page.apply_url}")
     summary.extend((f"Direction: {draft.direction}", f"Role: {draft.vacancy.title}", f"Company: {draft.vacancy.company}"))
     await _notify(ctx, "\n".join(summary))
@@ -87,7 +102,8 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             InlineKeyboardButton("Send to recruiter", callback_data=f"apply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
-    await _notify(ctx, f"Recruiter message:\n\n{draft.message}", reply_markup=confirmation)
+    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
+    await _notify(ctx, preview, reply_markup=confirmation)
 
 
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -213,3 +229,4 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Data not found. Please try again.")
             return
         await query.edit_message_text(f"Edit and send back to me:\n\n{payload['tg_message']}")
+
