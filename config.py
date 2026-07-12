@@ -14,6 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 YOUR_CHAT_ID = int(os.environ["YOUR_CHAT_ID"])
 TOKEN_FREE_MODE = _bool_env("TOKEN_FREE_MODE")
 RESUME_DIR = Path(os.environ.get("RESUME_DIR", "data/resumes"))
+JOBS_DB_PATH = Path(os.environ.get("JOBS_DB_PATH", "storage/jobs.db"))
 
 # Optional legacy LLM path.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
