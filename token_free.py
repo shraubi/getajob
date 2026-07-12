@@ -1,10 +1,13 @@
 """Pure token-free application flow used by the Telegram shell."""
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from classifier import classify
+from classifier import classify, score_directions
+
+logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>]+")
 _DIRECTION_LABELS = {
@@ -69,12 +72,25 @@ def extract_resume_text(path: Path) -> str:
 
 
 def classify_resume(path: Path) -> str:
+    extraction_error = ""
     try:
         text = extract_resume_text(path)
-    except Exception:
+    except Exception as exc:
         text = ""
-    filename_hint = path.stem.replace("_", " ").replace("-", " ")
-    return classify(filename_hint, text)
+        extraction_error = f"{type(exc).__name__}: {exc}"
+    filename_hint = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", path.stem)
+    filename_hint = filename_hint.replace("_", " ").replace("-", " ")
+    scores = score_directions(filename_hint, text)
+    direction = classify(filename_hint, text)
+    logger.info(
+        "Resume classification file=%s extracted_chars=%d direction=%s scores=%s extraction_error=%s",
+        path.name,
+        len(text),
+        direction,
+        scores,
+        extraction_error or "none",
+    )
+    return direction
 
 
 def discover_resumes(resume_dir: Path) -> dict[str, Path]:
@@ -84,7 +100,19 @@ def discover_resumes(resume_dir: Path) -> dict[str, Path]:
     for path in sorted(resume_dir.glob("*.pdf")):
         direction = classify_resume(path)
         if direction != "other":
+            if direction in result:
+                logger.warning(
+                    "Multiple resumes classified as %s; keeping %s and ignoring %s",
+                    direction,
+                    result[direction].name,
+                    path.name,
+                )
             result.setdefault(direction, path)
+    logger.info(
+        "Resume inventory directory=%s selected=%s",
+        resume_dir,
+        {direction: path.name for direction, path in result.items()},
+    )
     return result
 
 
