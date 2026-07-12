@@ -1,10 +1,13 @@
 """Pure token-free application flow used by the Telegram shell."""
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from classifier import classify
+from classifier import classify, score_directions
+
+logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>]+")
 _DIRECTION_LABELS = {
@@ -12,6 +15,7 @@ _DIRECTION_LABELS = {
     "data_engineering": "data engineering",
     "ml_engineering": "ML engineering",
     "devops": "DevOps",
+    "tech_support": "technical support",
 }
 
 
@@ -69,12 +73,35 @@ def extract_resume_text(path: Path) -> str:
 
 
 def classify_resume(path: Path) -> str:
+    extraction_error = ""
     try:
         text = extract_resume_text(path)
-    except Exception:
+    except Exception as exc:
         text = ""
-    filename_hint = path.stem.replace("_", " ").replace("-", " ")
-    return classify(filename_hint, text)
+        extraction_error = f"{type(exc).__name__}: {exc}"
+    text_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if text_lines:
+        role_hint = text_lines[1] if len(text_lines) > 1 else text_lines[0]
+        classification_text = text
+        source = "pdf_text"
+    else:
+        role_hint = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", path.stem)
+        role_hint = role_hint.replace("_", " ").replace("-", " ")
+        classification_text = ""
+        source = "filename"
+    scores = score_directions(role_hint, classification_text)
+    direction = classify(role_hint, classification_text)
+    logger.info(
+        "Resume classification file=%s source=%s role_hint=%r extracted_chars=%d direction=%s scores=%s extraction_error=%s",
+        path.name,
+        source,
+        role_hint,
+        len(text),
+        direction,
+        scores,
+        extraction_error or "none",
+    )
+    return direction
 
 
 def discover_resumes(resume_dir: Path) -> dict[str, Path]:
@@ -84,7 +111,19 @@ def discover_resumes(resume_dir: Path) -> dict[str, Path]:
     for path in sorted(resume_dir.glob("*.pdf")):
         direction = classify_resume(path)
         if direction != "other":
+            if direction in result:
+                logger.warning(
+                    "Multiple resumes classified as %s; keeping %s and ignoring %s",
+                    direction,
+                    result[direction].name,
+                    path.name,
+                )
             result.setdefault(direction, path)
+    logger.info(
+        "Resume inventory directory=%s selected=%s",
+        resume_dir,
+        {direction: path.name for direction, path in result.items()},
+    )
     return result
 
 
