@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 ca-certificates.crt
 storage/chroma_db/
+storage/jobs.db*
 logs/applications.jsonl
 data/resumes/*
 !data/resumes/.gitkeep
