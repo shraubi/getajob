@@ -30,7 +30,10 @@ class FakeHirifyClient:
         pass
 
     async def get_contact(self, _url):
-        return SimpleNamespace(kind="telegram", value="brandiumsu", target_url="https://t.me/brandiumsu")
+        return SimpleNamespace(
+            kind="telegram", value="brandiumsu", target_url="https://t.me/brandiumsu",
+            company_title="Acme from contacts",
+        )
 
 
 class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -50,7 +53,7 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             resume = Path(directory) / "resume.pdf"
             resume.write_bytes(b"pdf")
-            vacancy = Vacancy("Python Engineer", "Acme", "Python APIs", "https://hirify.me/jobs/1-role")
+            vacancy = Vacancy("Python Engineer", "Unknown company", "Python APIs", "https://hirify.me/jobs/1-role")
             page = ParsedJobPage(vacancy, "job_page", "", vacancy.url)
             draft = ApplicationDraft(vacancy, "backend_python", resume, "old generic text")
             ctx = SimpleNamespace(bot=FakeBot())
@@ -63,6 +66,7 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
             summary = next(item for item in ctx.bot.messages if "Contact: @brandiumsu" in item["text"])
             self.assertNotIn("Source:", summary["text"])
             self.assertNotIn("Job ID:", summary["text"])
+            self.assertIn("Company: Acme from contacts", summary["text"])
             preview = ctx.bot.messages[-1]
             self.assertIn("Приветствую, хочу откликнуться", preview["text"])
             self.assertIsNotNone(preview["reply_markup"])
