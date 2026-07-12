@@ -4,4 +4,3 @@ pypdf>=5.0.0,<7
 httpx>=0.28.0,<1
 beautifulsoup4>=4.13.0,<5
 telethon>=1.40.0,<2
-playwright==1.55.0
