@@ -62,7 +62,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     ) if parsed_page else ""
     logger.info(
         "Parsed job id=%s source=%s direction=%s title=%r resume=%s",
-        job_id, parsed_page.source_category if parsed_page else draft.vacancy.source_category, draft.direction,
+        job_id, parsed_page.source_category if parsed_page else "telegram_message", draft.direction,
         draft.vacancy.title, draft.resume_path.name,
     )
     summary = []
