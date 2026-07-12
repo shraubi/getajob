@@ -67,7 +67,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     try:
         draft = build_application_for_vacancy(parsed_page.vacancy, config.RESUME_DIR) if parsed_page else build_application(text, config.RESUME_DIR)
     except UnknownDirectionError:
-        await _notify(ctx, "I could not confidently choose a resume. Add a clearer role title or description.")
+        await _notify(ctx, "This role does not match any of the available resumes, so nothing will be sent.")
         return
     except ResumeNotFoundError as exc:
         logger.warning("Token-free resume missing: %s", exc)
