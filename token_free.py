@@ -15,6 +15,7 @@ _DIRECTION_LABELS = {
     "data_engineering": "data engineering",
     "ml_engineering": "ML engineering",
     "devops": "DevOps",
+    "tech_support": "technical support",
 }
 
 
@@ -78,13 +79,23 @@ def classify_resume(path: Path) -> str:
     except Exception as exc:
         text = ""
         extraction_error = f"{type(exc).__name__}: {exc}"
-    filename_hint = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", path.stem)
-    filename_hint = filename_hint.replace("_", " ").replace("-", " ")
-    scores = score_directions(filename_hint, text)
-    direction = classify(filename_hint, text)
+    text_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if text_lines:
+        role_hint = text_lines[1] if len(text_lines) > 1 else text_lines[0]
+        classification_text = text
+        source = "pdf_text"
+    else:
+        role_hint = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", path.stem)
+        role_hint = role_hint.replace("_", " ").replace("-", " ")
+        classification_text = ""
+        source = "filename"
+    scores = score_directions(role_hint, classification_text)
+    direction = classify(role_hint, classification_text)
     logger.info(
-        "Resume classification file=%s extracted_chars=%d direction=%s scores=%s extraction_error=%s",
+        "Resume classification file=%s source=%s role_hint=%r extracted_chars=%d direction=%s scores=%s extraction_error=%s",
         path.name,
+        source,
+        role_hint,
         len(text),
         direction,
         scores,
