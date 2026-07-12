@@ -10,8 +10,9 @@ class HirifyClientTests(unittest.TestCase):
     def test_parses_confirmed_telegram_response_without_rewriting_source_value(self):
         contact = parse_contacts_response({"contacts": [
             {"type": "telegram", "value": "brandiumsu", "short_code": "619s9"}
-        ]})
+        ], "company_title": "Брендиум"})
         self.assertEqual((contact.value, contact.short_code), ("brandiumsu", "619s9"))
+        self.assertEqual(contact.company_title, "Брендиум")
 
     def test_logs_in_once_before_first_contact_and_caches_slug(self):
         calls = []
@@ -67,4 +68,3 @@ class HirifyClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
