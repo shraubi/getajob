@@ -173,3 +173,10 @@ python main.py
 ```
 
 The bot fails safely when classification is unknown or a configured résumé is missing. Set `TOKEN_FREE_MODE=false` to retain the legacy LLM/RAG flow during rollout.
+
+
+For the Docker Compose deployment, put the PDFs in `data/resumes/` on the VM. Compose mounts that directory read-only at `/app/data/resumes`. Rebuild and restart with:
+
+```bash
+docker compose up -d --build
+```
