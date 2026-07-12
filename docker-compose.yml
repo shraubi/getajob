@@ -5,3 +5,4 @@ services:
     env_file: .env
     volumes:
       - ${CV_FILE:-./cv/base_cv.txt}:/app/cv/base_cv.txt:ro
+      - ${RESUME_DIR:-./data/resumes}:/app/data/resumes:ro

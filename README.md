@@ -136,3 +136,47 @@ getajob/
 └── logs/
     └── applications.jsonl  # Observability log (gitignored)
 ```
+
+
+## Token-free Telegram mode
+
+This mode accepts a pasted vacancy, classifies it with local weighted rules, selects a PDF résumé from the VM, and returns the résumé plus a deterministic recruiter message. It makes no LLM or embedding calls.
+
+Use this input format for the best metadata extraction:
+
+```text
+Title: Senior Python Engineer
+Company: Acme
+https://jobs.example/42
+
+Full vacancy description...
+```
+
+Deploy private résumés on the VM (they are gitignored):
+
+```text
+data/resumes/
+├── backend_python.pdf
+├── data_engineering.pdf
+├── ml_engineering.pdf
+└── devops.pdf
+```
+
+Configure and start:
+
+```bash
+cp .env.example .env
+# Set TELEGRAM_BOT_TOKEN and YOUR_CHAT_ID, then:
+TOKEN_FREE_MODE=true
+RESUME_DIR=data/resumes
+python main.py
+```
+
+The bot fails safely when classification is unknown or a configured résumé is missing. Set `TOKEN_FREE_MODE=false` to retain the legacy LLM/RAG flow during rollout.
+
+
+For the Docker Compose deployment, put the PDFs in `data/resumes/` on the VM. Compose mounts that directory read-only at `/app/data/resumes`. Rebuild and restart with:
+
+```bash
+docker compose up -d --build
+```
