@@ -1,4 +1,14 @@
 services:
+  hirify-auth:
+    image: mcr.microsoft.com/playwright/python:v1.55.0-noble
+    profiles: ["tools"]
+    working_dir: /app
+    env_file: .env
+    command: python scripts/auth_hirify.py
+    volumes:
+      - .:/app:ro
+      - ${DATA_DIR:-./storage}:/app/storage
+
   bot:
     build: .
     restart: unless-stopped

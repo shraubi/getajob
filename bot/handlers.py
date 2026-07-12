@@ -5,12 +5,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 import config
-from hirify_client import HirifyAuthError, HirifyClient, is_hirify_job_url
+from hirify_client import HirifyError, HirifyClient, is_hirify_job_url
 from job_page import JobPageError, extract_first_url, fetch_job_from_message
 from jobs_store import claim_job_for_send, get_job_by_prefix, mark_job_send_failed, mark_job_sent, save_fetched_job
 from storage.state import delete_pending, get_pending, save_pending
 from token_free import ResumeNotFoundError, UnknownDirectionError, build_application, build_application_for_vacancy
 from telegram_sender import TelegramSender, TelegramSenderError
+from telegram_input import telegram_message_url
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -20,20 +21,18 @@ async def _notify(ctx, text: str, **kwargs):
     await ctx.bot.send_message(chat_id=config.YOUR_CHAT_ID, text=text, **kwargs)
 
 
-async def _handle_token_free(ctx, text: str) -> None:
+async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     parsed_page = None
     try:
-        source_url = extract_first_url(text)
+        source_url = message_url or extract_first_url(text)
     except JobPageError:
         source_url = ""
     if source_url:
         await _notify(ctx, "Fetching and parsing the linked job page...")
         try:
-            parsed_page = await fetch_job_from_message(text)
+            parsed_page = await fetch_job_from_message(source_url)
             if is_hirify_job_url(parsed_page.fetched_url):
-                if not config.HIRIFY_EMAIL or not config.HIRIFY_PASSWORD:
-                    raise HirifyAuthError("Hirify login is not configured")
-                async with HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD) as client:
+                async with HirifyClient(config.HIRIFY_STATE_PATH) as client:
                     contact = await client.get_contact(parsed_page.fetched_url)
                 if contact:
                     parsed_page = replace(
@@ -43,7 +42,7 @@ async def _handle_token_free(ctx, text: str) -> None:
                         contact_kind=contact.kind,
                         contact_value=contact.value,
                     )
-        except (JobPageError, HirifyAuthError) as exc:
+        except (JobPageError, HirifyError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
             return
@@ -103,7 +102,7 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         await _notify(ctx, f"Too short to be a job description ({len(jd)} chars). Paste the full JD.")
         return
     if config.TOKEN_FREE_MODE:
-        await _handle_token_free(ctx, jd)
+        await _handle_token_free(ctx, jd, telegram_message_url(msg))
         return
 
     from cv.renderer import render_cv_pdf
