@@ -1,9 +1,11 @@
-"""Authenticated Hirify contact API adapter."""
+"""Hirify contacts adapter backed by Playwright browser storage state."""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -12,7 +14,11 @@ _API_BASE = "https://api.hirify.me"
 _SLUG_RE = re.compile(r"^/jobs/([^/?#]+)")
 
 
-class HirifyAuthError(RuntimeError):
+class HirifyError(RuntimeError):
+    pass
+
+
+class HirifyAuthError(HirifyError):
     pass
 
 
@@ -24,9 +30,7 @@ class Contact:
 
     @property
     def target_url(self) -> str:
-        if self.kind == "telegram":
-            return f"https://t.me/{self.value.lstrip('@')}"
-        return self.value if self.kind == "url" else ""
+        return f"https://t.me/{self.value.lstrip('@')}" if self.kind == "telegram" else self.value if self.kind == "url" else ""
 
 
 def is_hirify_job_url(url: str) -> bool:
@@ -35,7 +39,6 @@ def is_hirify_job_url(url: str) -> bool:
 
 
 def parse_contacts_response(payload: dict) -> Contact | None:
-    """Keep the source value intact; Telegram formatting belongs to the sender."""
     for item in payload.get("contacts", []):
         kind = str(item.get("type", "")).casefold()
         value = str(item.get("value", "")).strip()
@@ -49,20 +52,33 @@ def parse_contacts_response(payload: dict) -> Contact | None:
     return None
 
 
-class HirifyClient:
-    """Login once with a cookie jar and retry once when the session expires."""
+def load_browser_cookies(state_path: Path) -> tuple[httpx.Cookies, str]:
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HirifyAuthError("Hirify browser session is missing; run the Hirify auth command") from exc
+    cookies = httpx.Cookies()
+    xsrf = ""
+    for item in payload.get("cookies", []):
+        name = str(item.get("name", ""))
+        value = str(item.get("value", ""))
+        domain = str(item.get("domain", "")).lstrip(".") or "hirify.me"
+        path = str(item.get("path", "/"))
+        if name and value:
+            cookies.set(name, value, domain=domain, path=path)
+            if name == "XSRF-TOKEN":
+                xsrf = unquote(value)
+    if not xsrf:
+        raise HirifyAuthError("Hirify browser session has no XSRF token; run the Hirify auth command")
+    return cookies, xsrf
 
-    def __init__(
-        self,
-        email: str,
-        password: str,
-        *,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ):
-        self.email = email
-        self.password = password
+
+class HirifyClient:
+    def __init__(self, state_path: Path, *, transport: httpx.AsyncBaseTransport | None = None):
+        cookies, self._xsrf = load_browser_cookies(state_path)
         self._client = httpx.AsyncClient(
             base_url=_API_BASE,
+            cookies=cookies,
             follow_redirects=True,
             timeout=15.0,
             transport=transport,
@@ -75,39 +91,18 @@ class HirifyClient:
     async def __aexit__(self, *_):
         await self._client.aclose()
 
-    async def login(self) -> None:
-        csrf = await self._client.get("/sanctum/csrf-cookie")
-        csrf.raise_for_status()
-        token = self._client.cookies.get("XSRF-TOKEN")
-        if not token:
-            raise HirifyAuthError("Hirify did not issue a CSRF token")
-        response = await self._client.post(
-            "/api/auth/login",
-            json={"email": self.email, "password": self.password},
-            headers={"X-XSRF-TOKEN": unquote(token)},
-        )
-        if response.status_code in {401, 419, 422}:
-            raise HirifyAuthError("Hirify login failed")
-        response.raise_for_status()
-
-    async def _request_contact(self, slug: str) -> httpx.Response:
-        token = self._client.cookies.get("XSRF-TOKEN", "")
-        return await self._client.post(
-            f"/api/vacancies/{slug}/contacts",
-            json={},
-            headers={"X-XSRF-TOKEN": unquote(token)} if token else {},
-        )
-
     async def get_contact(self, job_url: str) -> Contact | None:
         parsed = urlparse(job_url)
         match = _SLUG_RE.match(parsed.path)
         if not is_hirify_job_url(job_url) or not match:
             return None
-        response = await self._request_contact(match.group(1))
+        response = await self._client.post(
+            f"/api/vacancies/{match.group(1)}/contacts",
+            json={},
+            headers={"X-XSRF-TOKEN": self._xsrf},
+        )
         if response.status_code in {401, 419}:
-            await self.login()
-            response = await self._request_contact(match.group(1))
-        if response.status_code in {401, 419}:
-            raise HirifyAuthError("Hirify session is missing or expired")
-        response.raise_for_status()
+            raise HirifyAuthError("Hirify browser session expired; run the Hirify auth command")
+        if response.is_error:
+            raise HirifyError(f"Hirify contacts request failed (HTTP {response.status_code})")
         return parse_contacts_response(response.json())
