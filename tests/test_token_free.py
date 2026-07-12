@@ -28,7 +28,15 @@ class TokenFreeFlowTests(unittest.TestCase):
 
     def test_does_not_treat_typescript_backend_tools_as_devops(self):
         title = "Backend Engineer (TypeScript)"
-        description = "NestJS, Docker, CI/CD, PostgreSQL"
+        description = (
+            "NestJS, Docker, CI/CD, PostgreSQL. Work with platform engineering, "
+            "SRE practices, Kubernetes infrastructure and Terraform deployments."
+        )
+        self.assertEqual(classify(title, description), "other")
+
+    def test_does_not_match_android_role_from_incidental_backend_or_devops_words(self):
+        title = "Android Developer (Kotlin)"
+        description = "Backend APIs, Docker CI/CD and infrastructure collaboration"
         self.assertEqual(classify(title, description), "other")
 
     def test_parses_labelled_vacancy_and_url(self):
