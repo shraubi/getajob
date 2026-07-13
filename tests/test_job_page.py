@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from job_page import JobPageError, UnsafeUrlError, extract_first_url, fetch_html, parse_job_html, validate_public_url
+from job_page import JobPageError, UnsafeUrlError, extract_first_url, fetch_html, parse_job_html, resolve_application_url, validate_public_url
 
 MESSAGE = """[Staff Data Engineer (Azure)](https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) (https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) in NDA"""
 
@@ -45,6 +45,24 @@ class JobPageTests(unittest.TestCase):
         parsed = parse_job_html(FORM_HTML, "https://careers.example.com/jobs/backend")
         self.assertEqual(parsed.source_category, "application_form")
         self.assertEqual(parsed.apply_url, "https://careers.example.com/contact")
+
+    def test_detects_russian_javascript_apply_button(self):
+        html = """<html><head><meta name="description" content="Python backend role with FastAPI and PostgreSQL for a distributed services team."></head>
+        <body><main><h1>Python-разработчик</h1><button>Отправить резюме</button></main></body></html>"""
+        parsed = parse_job_html(html, "https://example.com/vacancy/282")
+        self.assertEqual(parsed.apply_url, "https://example.com/vacancy/282")
+
+    @patch("job_page.validate_public_url", new_callable=AsyncMock)
+    def test_follows_html_short_link_to_application_form(self, _validate):
+        pages = {
+            "/short": '<html><body><main><h1>Redirect</h1><p>Continue to the vacancy application below.</p><a href="https://apply.example/form">Apply</a></main></body></html>',
+            "/form": '<html><body><main><h1>Apply</h1><p>Submit your resume for this engineering vacancy.</p><form><input type="file" name="resume"></form></main></body></html>',
+        }
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, text=pages[request.url.path], headers={"content-type": "text/html"}, request=request
+        ))
+        result = asyncio.run(resolve_application_url("https://lnkd.in/short", transport=transport))
+        self.assertEqual(result, "https://apply.example/form")
 
     @patch("job_page._resolved_ips", return_value={__import__("ipaddress").ip_address("127.0.0.1")})
     def test_rejects_private_destinations(self, _resolve):
