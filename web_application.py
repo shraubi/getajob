@@ -17,7 +17,8 @@ from token_free import extract_resume_text
 _MAX_PAGE_BYTES = 2_000_000
 _SUCCESS_RE = re.compile(
     r"thank\s+you|application\s+(?:was\s+)?(?:sent|submitted|received)|"
-    r"candidature\s+(?:a\s+ete\s+)?(?:envoyee|transmise)|merci\s+pour\s+votre\s+candidature",
+    r"candidature\s+(?:a\s+(?:ete|été)\s+)?(?:envoyee|envoyée|transmise|reçue)|"
+    r"merci\s+pour\s+votre\s+candidature",
     re.I,
 )
 
