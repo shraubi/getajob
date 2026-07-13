@@ -86,6 +86,46 @@ class FakeQuery:
 
 
 class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_external_form_one_button_submit_dry_run(self):
+        url = "https://www.jobposting.pro/emploi-2640578-999"
+        vacancy = Vacancy(
+            title="Senior AI Engineer", company="Algoteque",
+            description="AI Python LLM engineering role " * 5, url=url,
+        )
+        page = ParsedJobPage(vacancy, "application_form", url, url)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "ai.pdf"
+            resume.write_bytes(b"pdf")
+            db_path = root / "jobs.db"
+            profile_path = root / "applicant.json"
+            profile_path.write_text("{}", encoding="utf-8")
+            bot = FakeBot()
+            draft = ApplicationDraft(vacancy, "ml_engineering", resume, "")
+            with (
+                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("bot.handlers.is_hirify_job_url", return_value=False),
+                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+            ):
+                await _handle_token_free(SimpleNamespace(bot=bot), url)
+
+            preview = bot.messages[-1]
+            button_data = preview["reply_markup"].inline_keyboard[0][0].callback_data
+            self.assertTrue(button_data.startswith("webapply:"))
+            query = FakeQuery(button_data)
+            submit = AsyncMock(return_value="https://www.jobposting.pro/application/success")
+            with (
+                patch("bot.handlers.submit_application", new=submit),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+                patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
+            ):
+                await handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
+            submit.assert_awaited_once_with(url, resume, profile_path, "")
+            self.assertIn("Application submitted", query.edited)
+
     async def test_telegram_contact_preview_and_one_button_send_dry_run(self):
         url = "https://hirify.me/jobs/732017-application-backend-engineer-python"
         vacancy = Vacancy(
