@@ -91,6 +91,8 @@ class RalphLoopTests(unittest.TestCase):
                 result = await run_loop(config)
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["discovered"], 2)
+                # In dry-run mode, known URLs are not read, so all are new
+                self.assertEqual(result["known"], 0)
                 self.assertEqual(result["new"], 2)
                 self.assertEqual(result["processed"], 2)
             finally:
@@ -118,12 +120,13 @@ class RalphLoopTests(unittest.TestCase):
                 finally:
                     connection.close()
                 
+                # Use dry_run=False to test URL skipping
                 config = LoopConfig(
                     filter_source="hirify",
                     feed_url="https://hirify.me/",
                     limit=10,
                     db_path=db_path,
-                    dry_run=True,
+                    dry_run=False,  # Not dry-run so it reads known URLs
                     quiet=True,
                 )
                 

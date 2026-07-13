@@ -119,8 +119,18 @@ async def process_job(
     if config.quiet:
         print(f"  Processing: {url}")
     
-    # Check if we should use Telegram flow or direct rating
-    if config.telegram_api_id and config.telegram_api_hash and config.telegram_bot_token and config.session_path:
+    # In dry-run mode, always use direct rating (no Telegram)
+    # In production mode, use Telegram if all credentials are configured
+    use_telegram = (
+        not config.dry_run and
+        config.telegram_api_id and
+        config.telegram_api_hash and
+        config.telegram_bot_token and
+        config.session_path and
+        config.session_path.exists()
+    )
+    
+    if use_telegram:
         # Use Telegram flow
         try:
             telegram_run_id, messages = await send_job_to_bot(
@@ -151,6 +161,8 @@ async def process_job(
             }
     else:
         # Direct rating only
+        if config.quiet and not config.dry_run:
+            print(f"    Using direct rating (Telegram not configured or dry-run)")
         report = await rate_job(url, expected_direction=expected_direction)
         result = {
             "url": url,
@@ -159,18 +171,22 @@ async def process_job(
             "via_telegram": False,
         }
     
-    # Record the report
-    run_id, fingerprints = record_report(config.db_path, result["report"])
-    result["run_id"] = run_id
-    result["fingerprints"] = fingerprints
+    # Record the report (unless dry-run)
+    if not config.dry_run:
+        run_id, fingerprints = record_report(config.db_path, result["report"])
+        result["run_id"] = run_id
+        result["fingerprints"] = fingerprints
+    else:
+        result["run_id"] = "dry-run"
+        result["fingerprints"] = []
     
-    # Check for failures and create issues
+    # Check for failures and create issues (unless dry-run)
     if result["report"].failures:
         failure = result["report"].failures[0]
-        issue = render_issue(result["report"], run_id, failure)
+        issue = render_issue(result["report"], result["run_id"], failure)
         result["issue"] = issue
         
-        # If GitHub is configured, sync the issue
+        # If GitHub is configured and not dry-run, sync the issue
         if config.github_repository and config.github_token and not config.dry_run:
             try:
                 gh_result = await sync_issue(
@@ -180,7 +196,8 @@ async def process_job(
                 )
                 result["github_issue"] = gh_result
                 # Mark as created in DB
-                mark_issue_created(config.db_path, issue["fingerprint"], int(gh_result["number"]))
+                if not config.dry_run:
+                    mark_issue_created(config.db_path, issue["fingerprint"], int(gh_result["number"]))
             except Exception as exc:
                 if config.quiet:
                     print(f"    GitHub issue creation failed: {exc}")
@@ -274,11 +291,16 @@ async def run_loop(config: LoopConfig) -> dict[str, Any]:
     skipped: list[str] = []
     errors: list[dict[str, Any]] = []
     
-    # Get known URLs to skip
-    known_urls = get_known_urls(config.db_path)
+    # Get known URLs to skip (unless dry-run, then don't skip any)
+    if not config.dry_run:
+        known_urls = get_known_urls(config.db_path)
+    else:
+        known_urls = set()
     
     if config.quiet:
         print(f"Starting Ralph loop at {start_time.isoformat()}")
+        if config.dry_run:
+            print("  Mode: DRY-RUN (no Telegram, no GitHub, no DB writes)")
         print(f"Known URLs to skip: {len(known_urls)}")
     
     # Discover fresh jobs
@@ -379,7 +401,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Don't create GitHub issues or send to Telegram",
+        help="Don't create GitHub issues, send to Telegram, or write to DB",
     )
     parser.add_argument(
         "--quiet",
@@ -398,12 +420,20 @@ def main() -> None:
     args = parse_args()
     load_dotenv()
     
+    # Resolve session path: check RALPH_TELEGRAM_SESSION_PATH, then TELEGRAM_SESSION_PATH, then default
+    session_path_str = (
+        os.environ.get("RALPH_TELEGRAM_SESSION_PATH") or
+        os.environ.get("TELEGRAM_SESSION_PATH") or
+        ""
+    )
+    session_path = args.session_path or (Path(session_path_str) if session_path_str else None)
+    
     config = LoopConfig(
         filter_source=args.filter,
         feed_url=args.feed_url,
         limit=args.limit,
         db_path=args.db,
-        session_path=args.session_path or Path(os.environ.get("RALPH_TELEGRAM_SESSION_PATH", "") or ""),
+        session_path=session_path,
         github_repository=os.environ.get("GITHUB_REPOSITORY", ""),
         github_token=os.environ.get("GITHUB_TOKEN", ""),
         telegram_api_id=int(os.environ.get("TELEGRAM_API_ID", "0")),
@@ -414,8 +444,13 @@ def main() -> None:
     )
     
     # Validate Telegram config if not dry run
-    if not args.dry_run and not config.telegram_api_id and not config.telegram_api_hash and not config.telegram_bot_token:
-        print("Warning: Telegram credentials not configured, will use direct rating only")
+    if not args.dry_run:
+        if not config.telegram_api_id or not config.telegram_api_hash or not config.telegram_bot_token:
+            if not args.quiet:
+                print("Warning: Telegram credentials not fully configured, will use direct rating only")
+        elif not config.session_path or not config.session_path.exists():
+            if not args.quiet:
+                print(f"Warning: Telegram session path not found or doesn't exist: {config.session_path}, will use direct rating only")
     
     loop_result = asyncio.run(run_loop(config))
     
