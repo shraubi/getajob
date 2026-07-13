@@ -18,6 +18,7 @@ from token_free import (
 )
 from telegram_sender import TelegramSender, TelegramSenderError
 from telegram_input import telegram_message_url
+from web_application import WebApplicationError, submit_application
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -106,6 +107,11 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             InlineKeyboardButton("Send to recruiter", callback_data=f"apply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
+    elif parsed_page and parsed_page.apply_url:
+        confirmation = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Apply with resume", callback_data=f"webapply:{job_id[:24]}"),
+            InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
+        ]])
     preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message — resume only."
     await _notify(ctx, preview, reply_markup=confirmation)
 
@@ -175,6 +181,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = query.data or ""
     if data.startswith("applyskip:"):
         await query.edit_message_text("Application skipped.")
+        return
+    if data.startswith("webapply:"):
+        prefix = data.split(":", 1)[1]
+        job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
+        if not job or not job["apply_url"]:
+            await query.edit_message_text("Saved web application was not found.")
+            return
+        if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
+            await query.edit_message_text("This application is already sending or sent.")
+            return
+        try:
+            result_url = await submit_application(
+                job["apply_url"], config.RESUME_DIR / job["resume_name"],
+                config.APPLICATION_PROFILE_PATH, job["recruiter_message"],
+            )
+            mark_job_sent(config.JOBS_DB_PATH, job["id"], 0)
+        except Exception as exc:
+            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            logger.exception("Web application failed for job %s", job["id"])
+            await query.edit_message_text(f"Application failed: {exc}")
+            return
+        await query.edit_message_text(f"Application submitted with {job['resume_name']}.\n{result_url}")
         return
     if data.startswith("apply:"):
         prefix = data.split(":", 1)[1]
