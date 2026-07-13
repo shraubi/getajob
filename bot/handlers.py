@@ -1,5 +1,6 @@
 import logging
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -7,7 +8,16 @@ from telegram.ext import ContextTypes
 import config
 from hirify_client import HirifyError, HirifyClient, is_hirify_job_url
 from job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
-from jobs_store import claim_job_for_send, get_job_by_prefix, mark_job_send_failed, mark_job_sent, save_fetched_job
+from jobs_store import (
+    claim_job_for_send,
+    claim_telegram_job_for_send,
+    get_job_by_prefix,
+    mark_job_send_failed,
+    mark_job_sent,
+    record_send_attempt,
+    save_fetched_job,
+    set_sender_cooldown,
+)
 from storage.state import delete_pending, get_pending, save_pending
 from token_free import (
     ResumeNotFoundError,
@@ -16,7 +26,7 @@ from token_free import (
     build_application_for_vacancy,
     render_telegram_message,
 )
-from telegram_sender import TelegramSender, TelegramSenderError
+from telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError
 from telegram_input import telegram_message_url
 from web_application import WebApplicationError, submit_application
 
@@ -130,7 +140,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             InlineKeyboardButton("Apply with resume", callback_data=f"webapply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
-    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message — resume only."
+    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
     await _notify(ctx, preview, reply_markup=confirmation)
 
 
@@ -247,8 +257,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not job or job["contact_kind"] != "telegram":
             await query.edit_message_text("Saved Telegram application not found.")
             return
-        if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
-            await query.edit_message_text("This application is already sending or sent.")
+        claimed, retry_at, reason = claim_telegram_job_for_send(
+            config.JOBS_DB_PATH,
+            job["id"],
+            min_interval_seconds=config.TELEGRAM_SEND_MIN_INTERVAL_SECONDS,
+            max_per_hour=config.TELEGRAM_SEND_MAX_PER_HOUR,
+        )
+        if not claimed:
+            if retry_at:
+                record_send_attempt(
+                    config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "throttled"
+                )
+                await query.edit_message_text(
+                    f"Telegram send paused until {retry_at.astimezone(timezone.utc):%Y-%m-%d %H:%M UTC}: {reason}."
+                )
+            else:
+                await query.edit_message_text("This application is already sending or sent.")
             return
         try:
             if not config.TELEGRAM_API_ID or not config.TELEGRAM_API_HASH:
@@ -258,8 +282,29 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 job["contact_value"], job["recruiter_message"], config.RESUME_DIR / job["resume_name"]
             )
             mark_job_sent(config.JOBS_DB_PATH, job["id"], external_id)
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "sent"
+            )
+        except TelegramPeerFloodError as exc:
+            blocked_until = datetime.now(timezone.utc) + timedelta(
+                hours=config.TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS
+            )
+            set_sender_cooldown(config.JOBS_DB_PATH, "telegram", blocked_until, "Telegram PeerFlood")
+            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "peer_flood", exc
+            )
+            logger.warning("Telegram PeerFlood; sends paused until %s", blocked_until.isoformat())
+            await query.edit_message_text(
+                f"Telegram restricted outbound messages. Automatic sends are paused until "
+                f"{blocked_until:%Y-%m-%d %H:%M UTC}; this application was not sent."
+            )
+            return
         except Exception as exc:
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "failed", exc
+            )
             logger.exception("Telegram application send failed for job %s", job["id"])
             await query.edit_message_text(f"Send failed: {exc}")
             return
@@ -298,3 +343,4 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Data not found. Please try again.")
             return
         await query.edit_message_text(f"Edit and send back to me:\n\n{payload['tg_message']}")
+

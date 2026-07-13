@@ -21,6 +21,9 @@ TELEGRAM_API_ID = int(os.environ.get("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_PHONE = os.environ.get("TELEGRAM_PHONE", "")
 TELEGRAM_SESSION_PATH = Path(os.environ.get("TELEGRAM_SESSION_PATH", "storage/telegram_sender"))
+TELEGRAM_SEND_MIN_INTERVAL_SECONDS = int(os.environ.get("TELEGRAM_SEND_MIN_INTERVAL_SECONDS", "600"))
+TELEGRAM_SEND_MAX_PER_HOUR = int(os.environ.get("TELEGRAM_SEND_MAX_PER_HOUR", "3"))
+TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS = int(os.environ.get("TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS", "24"))
 APPLICATION_PROFILE_PATH = Path(os.environ.get("APPLICATION_PROFILE_PATH", "storage/applicant.json"))
 
 # Optional legacy LLM path.
@@ -33,3 +36,4 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "storage/chroma_db")
 MAX_ANALYZER_ITERATIONS = int(os.environ.get("MAX_ANALYZER_ITERATIONS", "5"))
 MAX_WRITER_ITERATIONS = int(os.environ.get("MAX_WRITER_ITERATIONS", "8"))
+

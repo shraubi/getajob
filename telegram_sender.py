@@ -10,6 +10,12 @@ class TelegramSenderError(RuntimeError):
     pass
 
 
+class TelegramPeerFloodError(TelegramSenderError):
+    """Telegram has temporarily restricted unsolicited outbound messages."""
+
+    pass
+
+
 def telegram_username(value: str) -> str:
     clean = value.strip().lstrip("@")
     if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", clean):
@@ -38,9 +44,17 @@ class TelegramSender:
         async with client:
             if not await client.is_user_authorized():
                 raise TelegramSenderError("Telegram sender account is not authorized")
-            sent = await client.send_file(
-                telegram_username(username),
-                str(resume_path),
-                caption=message,
-            )
+            try:
+                sent = await client.send_file(
+                    telegram_username(username),
+                    str(resume_path),
+                    caption=message,
+                )
+            except Exception as exc:
+                if type(exc).__name__ == "PeerFloodError":
+                    raise TelegramPeerFloodError(
+                        "Telegram restricted new outbound conversations; automatic retries are paused"
+                    ) from exc
+                raise
         return int(sent.id)
+

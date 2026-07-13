@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from telegram_sender import TelegramSender, TelegramSenderError, telegram_username
+from telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError, telegram_username
 
 
 class FakeSent:
@@ -26,6 +26,10 @@ class FakeClient:
     async def send_file(self, username, path, caption):
         self.call = (username, path, caption)
         return FakeSent()
+
+
+class PeerFloodError(Exception):
+    pass
 
 
 class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +61,20 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(TelegramSenderError, "not authorized"):
                 await sender.send_resume("brandiumsu", "Hello", resume)
 
+    async def test_converts_peer_flood_to_safe_domain_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            resume = Path(directory) / "resume.pdf"
+            resume.write_bytes(b"pdf")
+            fake = FakeClient()
+            async def fail(*_args, **_kwargs):
+                raise PeerFloodError("too many requests")
+            fake.send_file = fail
+            sender = TelegramSender(1, "hash", Path(directory) / "session")
+            sender._client = lambda: fake
+            with self.assertRaisesRegex(TelegramPeerFloodError, "automatic retries are paused"):
+                await sender.send_resume("brandiumsu", "Hello", resume)
+
 
 if __name__ == "__main__":
     unittest.main()
+

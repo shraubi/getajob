@@ -3,7 +3,7 @@
 import hashlib
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from job_page import ParsedJobPage
@@ -32,9 +32,33 @@ CREATE TABLE IF NOT EXISTS jobs (
 )
 """
 
+_OUTBOUND_SCHEMA = """
+CREATE TABLE IF NOT EXISTS outbound_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_type TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    attempted_at TEXT NOT NULL
+)
+"""
+
+_COOLDOWN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sender_cooldowns (
+    channel TEXT PRIMARY KEY,
+    blocked_until TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_SCHEMA)
+    connection.execute(_OUTBOUND_SCHEMA)
+    connection.execute(_COOLDOWN_SCHEMA)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
     if "recruiter_message" not in columns:
         connection.execute("ALTER TABLE jobs ADD COLUMN recruiter_message TEXT NOT NULL DEFAULT ''")
@@ -133,6 +157,123 @@ def claim_job_for_send(db_path: Path, job_id: str) -> bool:
         connection.close()
 
 
+def claim_telegram_job_for_send(
+    db_path: Path,
+    job_id: str,
+    *,
+    min_interval_seconds: int,
+    max_per_hour: int,
+) -> tuple[bool, datetime | None, str]:
+    """Atomically reserve the single Telegram sender while enforcing limits."""
+    now = datetime.now(timezone.utc)
+    connection = sqlite3.connect(db_path, timeout=10)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _ensure_schema(connection)
+        target = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not target or target[0] not in {"parsed", "send_failed"}:
+            connection.rollback()
+            return False, None, ""
+
+        cooldown = connection.execute(
+            "SELECT blocked_until, reason FROM sender_cooldowns WHERE channel='telegram'"
+        ).fetchone()
+        if cooldown:
+            blocked_until = datetime.fromisoformat(cooldown[0])
+            if blocked_until > now:
+                connection.rollback()
+                return False, blocked_until, cooldown[1]
+
+        active = connection.execute(
+            "SELECT 1 FROM jobs WHERE contact_kind='telegram' AND status='sending' AND id<>? LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if active:
+            connection.rollback()
+            return False, now + timedelta(seconds=60), "another Telegram application is sending"
+
+        latest = connection.execute(
+            """SELECT sent_at FROM jobs
+               WHERE contact_kind='telegram' AND status='sent' AND sent_at IS NOT NULL
+               ORDER BY sent_at DESC LIMIT 1"""
+        ).fetchone()
+        if latest and min_interval_seconds > 0:
+            retry_at = datetime.fromisoformat(latest[0]) + timedelta(seconds=min_interval_seconds)
+            if retry_at > now:
+                connection.rollback()
+                return False, retry_at, "minimum interval between Telegram applications"
+
+        cutoff = (now - timedelta(hours=1)).isoformat()
+        recent_count = connection.execute(
+            """SELECT COUNT(*) FROM jobs
+               WHERE contact_kind='telegram' AND status='sent' AND sent_at >= ?""",
+            (cutoff,),
+        ).fetchone()[0]
+        if max_per_hour > 0 and recent_count >= max_per_hour:
+            oldest = connection.execute(
+                """SELECT sent_at FROM jobs
+                   WHERE contact_kind='telegram' AND status='sent' AND sent_at >= ?
+                   ORDER BY sent_at ASC LIMIT 1""",
+                (cutoff,),
+            ).fetchone()[0]
+            retry_at = datetime.fromisoformat(oldest) + timedelta(hours=1)
+            connection.rollback()
+            return False, retry_at, f"hourly Telegram limit ({max_per_hour})"
+
+        cursor = connection.execute(
+            "UPDATE jobs SET status='sending' WHERE id=? AND status IN ('parsed', 'send_failed')",
+            (job_id,),
+        )
+        connection.commit()
+        return cursor.rowcount == 1, None, ""
+    finally:
+        connection.close()
+
+
+def set_sender_cooldown(db_path: Path, channel: str, blocked_until: datetime, reason: str) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(connection)
+        connection.execute(
+            """INSERT INTO sender_cooldowns (channel, blocked_until, reason, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(channel) DO UPDATE SET
+                   blocked_until=excluded.blocked_until,
+                   reason=excluded.reason,
+                   updated_at=excluded.updated_at""",
+            (channel, blocked_until.isoformat(), reason, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def record_send_attempt(
+    db_path: Path,
+    job_id: str,
+    channel: str,
+    target: str,
+    status: str,
+    error: Exception | None = None,
+) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(connection)
+        connection.execute(
+            """INSERT INTO outbound_attempts (
+                   job_id, channel, target, status, error_type, error_message, attempted_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job_id, channel, target, status,
+                type(error).__name__ if error else "", str(error)[:1000] if error else "",
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def mark_job_sent(db_path: Path, job_id: str, external_message_id: int) -> bool:
     connection = sqlite3.connect(db_path)
     try:
@@ -154,3 +295,4 @@ def mark_job_send_failed(db_path: Path, job_id: str) -> None:
         connection.commit()
     finally:
         connection.close()
+
