@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 import config
 from hirify_client import HirifyError, HirifyClient, is_hirify_job_url
-from job_page import JobPageError, extract_first_url, fetch_job_from_message
+from job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
 from jobs_store import claim_job_for_send, get_job_by_prefix, mark_job_send_failed, mark_job_sent, save_fetched_job
 from storage.state import delete_pending, get_pending, save_pending
 from token_free import (
@@ -52,14 +52,27 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
                     vacancy = parsed_page.vacancy
                     if vacancy.company == "Unknown company" and contact.company_title:
                         vacancy = replace(vacancy, company=contact.company_title)
+                    apply_url = contact.target_url
+                    if contact.kind == "url":
+                        apply_url = await resolve_application_url(apply_url)
                     parsed_page = replace(
                         parsed_page,
                         vacancy=vacancy,
                         source_category="telegram_contact" if contact.kind == "telegram" else "external_application_url",
-                        apply_url=contact.target_url,
+                        apply_url=apply_url,
                         contact_kind=contact.kind,
                         contact_value=contact.value,
                     )
+                else:
+                    direct = await _get_hirify_client().get_direct_application(parsed_page.fetched_url)
+                    if direct:
+                        parsed_page = replace(
+                            parsed_page,
+                            source_category="hirify_direct_application",
+                            apply_url=parsed_page.fetched_url,
+                            contact_kind="hirify_direct",
+                            contact_value=str(direct.vacancy_id),
+                        )
         except (JobPageError, HirifyError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
@@ -105,6 +118,11 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     if parsed_page and parsed_page.contact_kind == "telegram":
         confirmation = InlineKeyboardMarkup([[
             InlineKeyboardButton("Send to recruiter", callback_data=f"apply:{job_id[:24]}"),
+            InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
+        ]])
+    elif parsed_page and parsed_page.contact_kind == "hirify_direct":
+        confirmation = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Apply through Hirify", callback_data=f"hirifyapply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
     elif parsed_page and parsed_page.apply_url:
@@ -203,6 +221,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"Application failed: {exc}")
             return
         await query.edit_message_text(f"Application submitted with {job['resume_name']}.\n{result_url}")
+        return
+    if data.startswith("hirifyapply:"):
+        prefix = data.split(":", 1)[1]
+        job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
+        if not job or job["contact_kind"] != "hirify_direct":
+            await query.edit_message_text("Saved Hirify application was not found.")
+            return
+        if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
+            await query.edit_message_text("This application is already sending or sent.")
+            return
+        try:
+            external_id = await _get_hirify_client().apply_direct(int(job["contact_value"]))
+            mark_job_sent(config.JOBS_DB_PATH, job["id"], external_id)
+        except Exception as exc:
+            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            logger.exception("Hirify direct application failed for job %s", job["id"])
+            await query.edit_message_text(f"Application failed: {exc}")
+            return
+        await query.edit_message_text(f"Applied through Hirify with {job['resume_name']} (application {external_id}).")
         return
     if data.startswith("apply:"):
         prefix = data.split(":", 1)[1]
