@@ -181,8 +181,14 @@ async def process_job(
         result["fingerprints"] = []
     
     # Check for failures and create issues (unless dry-run)
-    if result["report"].failures:
-        failure = result["report"].failures[0]
+    reportable_failures = result["report"].failures
+    if expected_direction is None:
+        reportable_failures = tuple(
+            f for f in reportable_failures if f.stage != "classification"
+        )
+    if reportable_failures:
+        failure = reportable_failures[0]
+
         issue = render_issue(result["report"], result["run_id"], failure)
         result["issue"] = issue
         
@@ -425,6 +431,10 @@ def main() -> None:
         ""
     )
     session_path = args.session_path or (Path(session_path_str) if session_path_str else None)
+    if session_path is not None and not session_path.exists():
+        with_suffix = session_path.with_suffix(".session")
+        if with_suffix.exists():
+            session_path = with_suffix
     
     config = LoopConfig(
         filter_source=args.filter,
