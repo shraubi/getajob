@@ -11,10 +11,18 @@ from ralph.github_issue import sync_issue
 from ralph.rating import RatingReport, StageRating, failure_fingerprint
 from ralph.discover import extract_job_urls
 from ralph.store import record_report, render_issue
-from ralph.telegram_flow import ObservedMessage, review_bot_output
+from ralph.telegram_flow import ObservedMessage, _next_response_timeout, review_bot_output
 
 
 class RalphFirstLoopTests(unittest.TestCase):
+    def test_waits_for_slow_first_bot_reply_then_uses_quiet_window(self):
+        self.assertEqual(
+            _next_response_timeout(0, quiet_seconds=12, timeout_seconds=75), 75
+        )
+        self.assertEqual(
+            _next_response_timeout(1, quiet_seconds=12, timeout_seconds=75), 12
+        )
+
     def test_github_sync_creates_issue_for_new_fingerprint(self):
         requests = []
 
