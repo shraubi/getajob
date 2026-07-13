@@ -189,7 +189,7 @@ def render_message(vacancy: Vacancy, direction: str) -> str:
 def render_telegram_message(vacancy_url: str) -> str:
     return (
         "Приветствую, хочу откликнуться вот на эту вакансию:\n"
-        f'"{vacancy_url}"\n'
+        f"{vacancy_url}\n"
         "Резюме прикрепляю. Буду рада пообщаться подробнее"
     )
 
