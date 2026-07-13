@@ -52,6 +52,12 @@ def _observed(message) -> ObservedMessage:
     )
 
 
+def _next_response_timeout(
+    observed_count: int, *, quiet_seconds: float, timeout_seconds: float
+) -> float:
+    return timeout_seconds if observed_count == 0 else quiet_seconds
+
+
 async def send_job_to_bot(
     url: str,
     *,
@@ -75,7 +81,14 @@ async def send_job_to_bot(
             await conversation.send_message(f"{url}\n\nRalph-Run: {run_id}")
             while True:
                 try:
-                    response = await asyncio.wait_for(conversation.get_response(), timeout=quiet_seconds)
+                    response_timeout = _next_response_timeout(
+                        len(observed),
+                        quiet_seconds=quiet_seconds,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    response = await asyncio.wait_for(
+                        conversation.get_response(), timeout=response_timeout
+                    )
                 except asyncio.TimeoutError:
                     break
                 observed.append(_observed(response))
