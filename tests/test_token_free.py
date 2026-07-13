@@ -12,9 +12,33 @@ from token_free import (
     parse_vacancy,
     select_resume,
 )
+from classifier import classify
 
 
 class TokenFreeFlowTests(unittest.TestCase):
+    def test_matches_russian_ai_agent_role_to_ml_resume(self):
+        title = "Разработчик ИИ-агентов (Маркетинг)"
+        description = "Навыки: ai, marketing, api, llm, automation, databases"
+        self.assertEqual(classify(title, description), "ml_engineering")
+
+    def test_matches_python_backend_without_requiring_exact_title(self):
+        title = "Middle Developer"
+        description = "Backend service using Python, FastAPI, PostgreSQL, Redis and Kafka"
+        self.assertEqual(classify(title, description), "backend_python")
+
+    def test_does_not_treat_typescript_backend_tools_as_devops(self):
+        title = "Backend Engineer (TypeScript)"
+        description = (
+            "NestJS, Docker, CI/CD, PostgreSQL. Work with platform engineering, "
+            "SRE practices, Kubernetes infrastructure and Terraform deployments."
+        )
+        self.assertEqual(classify(title, description), "other")
+
+    def test_does_not_match_android_role_from_incidental_backend_or_devops_words(self):
+        title = "Android Developer (Kotlin)"
+        description = "Backend APIs, Docker CI/CD and infrastructure collaboration"
+        self.assertEqual(classify(title, description), "other")
+
     def test_parses_labelled_vacancy_and_url(self):
         vacancy = parse_vacancy(
             "Title: Senior Python Engineer\nCompany: Acme\n"
@@ -82,7 +106,8 @@ class TokenFreeFlowTests(unittest.TestCase):
             )
             self.assertEqual(draft.direction, "backend_python")
             self.assertEqual(draft.resume_path, resume)
-            self.assertIn("Acme", draft.message)
+            self.assertEqual(draft.vacancy.company, "Unknown company")
+            self.assertNotIn("Unknown company", draft.message)
 
 
 if __name__ == "__main__":
