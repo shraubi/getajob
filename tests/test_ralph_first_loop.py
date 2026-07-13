@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import asyncio
 import httpx
@@ -11,10 +12,29 @@ from ralph.github_issue import sync_issue
 from ralph.rating import RatingReport, StageRating, failure_fingerprint
 from ralph.discover import extract_job_urls
 from ralph.store import record_report, render_issue
-from ralph.telegram_flow import ObservedMessage, review_bot_output
+from ralph.telegram_flow import ObservedMessage, preflight_application_page, review_bot_output
 
 
 class RalphFirstLoopTests(unittest.TestCase):
+    def test_preflights_application_page_without_submitting(self):
+        messages = (
+            ObservedMessage("Apply: https://jobs.example/apply\nDirection: backend_python\nRole: Python\nCompany: Acme"),
+            ObservedMessage("Selected resume", has_document=True),
+            ObservedMessage("No cover message", buttons=("Apply with resume",)),
+        )
+        report = review_bot_output("https://jobs.example/job", messages, expected_direction="backend_python")
+        form = '<form method="post"><input name="name" required><input name="phone" required><input name="urls[LinkedIn]" required><input type="file" name="resume"></form>'
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, text=form, request=request))
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("ralph.telegram_flow.validate_public_url", new=AsyncMock()), \
+             patch("ralph.telegram_flow.select_resume", return_value=Path(directory) / "resume.pdf"):
+            checked = asyncio.run(preflight_application_page(
+                report, messages, resume_dir=Path(directory),
+                profile_path=Path(directory) / "profile.json", transport=transport,
+            ))
+        self.assertIn("name, phone, urls[LinkedIn]", checked.failures[-1].summary)
+        self.assertFalse(checked.failures[-1].evidence["submitted"])
+
     def test_github_sync_creates_issue_for_new_fingerprint(self):
         requests = []
 
