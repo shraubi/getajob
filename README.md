@@ -197,3 +197,38 @@ When a Telegram message contains a public HTTP(S) URL, the bot treats the linked
 Apply/contact targets are discovered generically from forms, resume/CV fields, and link/button labels such as apply, application, submit, contact, send CV, and their common Russian equivalents. There are no per-site CSS selector tables.
 
 The response includes the detected page category, final fetched URL, apply/contact URL when found, classification, selected resume, and generated message. Expired pages (HTTP 404/410) are reported and are not classified from Telegram preview text.
+
+## Telegram application source
+
+Hirify vacancies with a Telegram contact use a separate Telegram user account through Telethon. The bot only sends after the owner presses the confirmation button. The SQLite job record is claimed atomically, so a retried callback cannot send the same application twice. Successful sends retain the Telegram message ID as evidence; failures and throttling decisions are recorded without résumé contents.
+
+Configure the sender in `.env`:
+
+```text
+TELEGRAM_API_ID=...
+TELEGRAM_API_HASH=...
+TELEGRAM_PHONE=...
+TELEGRAM_SESSION_PATH=storage/telegram_sender
+TELEGRAM_SENDING_ENABLED=true
+```
+
+Authorize the session once on the VM and restart the bot:
+
+```bash
+docker compose run --rm bot python scripts/auth_telegram_sender.py
+docker compose up -d --build
+```
+
+For an explicit live smoke test, send only to an account you control. It is skipped in CI and unless `RUN_LIVE_TELEGRAM_SMOKE=1` is set:
+
+```bash
+docker compose run --rm \
+  -e RUN_LIVE_TELEGRAM_SMOKE=1 \
+  -e LIVE_TELEGRAM_TARGET=my_test_username \
+  -e LIVE_TELEGRAM_RESUME=/app/data/resumes/test_resume.pdf \
+  bot python -m unittest tests.test_live_telegram_sender -v
+```
+
+Telegram can restrict unsolicited new conversations with `PeerFloodError` and does not provide a precise retry time for that error. The bot therefore persists a configurable cooldown and never retries it blindly. To stop all Telegram applications immediately while keeping parsing and previews available, set `TELEGRAM_SENDING_ENABLED=false` and restart Compose. Re-enable it only after the restriction or incident is resolved.
+
+Rollback deployment code by checking out the previous known-good commit on the VM and rebuilding Compose; `data/resumes/`, the Telethon session, and `storage/jobs.db` remain outside the image in mounted directories. Never delete those mounted files as part of an image rollback.
