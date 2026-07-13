@@ -40,7 +40,7 @@ sys.modules.setdefault("storage.state", storage_state_module)
 
 import config
 from bot.handlers import _handle_token_free, handle_callback
-from hirify_client import Contact
+from hirify_client import Contact, DirectApplication
 from job_page import ParsedJobPage
 from token_free import ApplicationDraft, Vacancy
 
@@ -60,6 +60,20 @@ class FakeBot:
 class FakeHirifyClient:
     async def get_contact(self, _url):
         return Contact("telegram", "artem_avsievich")
+
+
+class FakeDirectHirifyClient:
+    applied = []
+
+    async def get_contact(self, _url):
+        return None
+
+    async def get_direct_application(self, _url):
+        return DirectApplication(732800)
+
+    async def apply_direct(self, vacancy_id):
+        self.applied.append(vacancy_id)
+        return 991
 
 
 class FakeSender:
@@ -86,6 +100,42 @@ class FakeQuery:
 
 
 class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hirify_direct_application_one_button_dry_run(self):
+        url = "https://hirify.me/jobs/732800-python-developer"
+        vacancy = Vacancy(
+            title="Python Developer", company="BETBY",
+            description="Python asyncio backend microservices role " * 5, url=url,
+        )
+        page = ParsedJobPage(vacancy, "structured_job_page", "", url)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "backend.pdf"
+            resume.write_bytes(b"pdf")
+            db_path = root / "jobs.db"
+            bot = FakeBot()
+            client = FakeDirectHirifyClient()
+            client.applied.clear()
+            draft = ApplicationDraft(vacancy, "backend_python", resume, "")
+            with (
+                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("bot.handlers._get_hirify_client", return_value=client),
+                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+            ):
+                await _handle_token_free(SimpleNamespace(bot=bot), url)
+
+            button_data = bot.messages[-1]["reply_markup"].inline_keyboard[0][0].callback_data
+            self.assertTrue(button_data.startswith("hirifyapply:"))
+            query = FakeQuery(button_data)
+            with (
+                patch("bot.handlers._get_hirify_client", return_value=client),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+            ):
+                await handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
+            self.assertEqual(client.applied, [732800])
+            self.assertIn("Applied through Hirify", query.edited)
+
     async def test_external_form_one_button_submit_dry_run(self):
         url = "https://www.jobposting.pro/emploi-2640578-999"
         vacancy = Vacancy(
@@ -162,7 +212,8 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
             preview = bot.messages[2]
             self.assertIn("Приветствую, хочу откликнуться", preview["text"])
-            self.assertIn(f'"{url}"', preview["text"])
+            self.assertIn(url, preview["text"])
+            self.assertNotIn(f'"{url}"', preview["text"])
             button_data = preview["reply_markup"].inline_keyboard[0][0].callback_data
             self.assertTrue(button_data.startswith("apply:"))
 

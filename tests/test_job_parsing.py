@@ -44,7 +44,7 @@ class JobParsingTests(unittest.TestCase):
         self.assertEqual(
             render_telegram_message(url),
             "Приветствую, хочу откликнуться вот на эту вакансию:\n"
-            f'"{url}"\n'
+            f"{url}\n"
             "Резюме прикрепляю. Буду рада пообщаться подробнее",
         )
 

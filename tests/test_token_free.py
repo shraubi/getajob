@@ -39,6 +39,18 @@ class TokenFreeFlowTests(unittest.TestCase):
         description = "Backend APIs, Docker CI/CD and infrastructure collaboration"
         self.assertEqual(classify(title, description), "other")
 
+    def test_matches_russian_technical_support_specialist(self):
+        self.assertEqual(
+            classify("Специалист технической поддержки", "Помощь пользователям и обработка обращений"),
+            "tech_support",
+        )
+
+    def test_matches_payment_support_manager(self):
+        self.assertEqual(
+            classify("Payment Support Manager (iGaming)", "Handle payment incidents and customer tickets"),
+            "tech_support",
+        )
+
     def test_parses_labelled_vacancy_and_url(self):
         vacancy = parse_vacancy(
             "Title: Senior Python Engineer\nCompany: Acme\n"

@@ -30,6 +30,26 @@ FORM_HTML = """
 
 
 class WebApplicationTests(unittest.TestCase):
+    def test_reports_getmatch_auth_requirement_before_form_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(WebApplicationError, "signed-in candidate session"):
+                asyncio.run(submit_application(
+                    "https://getmatch.ru/vacancies/35220-role",
+                    root / "missing.pdf",
+                    root / "missing.json",
+                ))
+
+    def test_reports_korona_captcha_requirement_before_form_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(WebApplicationError, "visual CAPTCHA"):
+                asyncio.run(submit_application(
+                    "https://koronatech.ru/vacancy/282/",
+                    root / "missing.pdf",
+                    root / "missing.json",
+                ))
+
     def test_maps_profile_resume_and_screening_answers(self):
         profile = ApplicantProfile("Ekaterina", "Tuganova", "me@example.com", "+995 555 123", {"q1": "0", "q2": "0", "q3": "1"})
         action, data, file_field = build_form_payload(FORM_HTML, "https://jobs.example/42", profile)

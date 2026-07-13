@@ -17,11 +17,13 @@ _URL_RE = re.compile(r"https?://[^\s<>\]]+")
 _ACTION_RE = re.compile(
     r"\b(apply|application|submit|contact|email|send\s+(?:cv|resume)|"
     r"\u043e\u0442\u043a\u043b\u0438\u043a|\u043e\u0442\u043a\u043b\u0438\u043a\u043d\u0443\u0442\u044c\u0441\u044f|"
-    r"\u0441\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f|\u043d\u0430\u043f\u0438\u0441\u0430\u0442\u044c)\b",
+    r"\u0441\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f|\u043d\u0430\u043f\u0438\u0441\u0430\u0442\u044c|"
+    r"\u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c\s+\u0440\u0435\u0437\u044e\u043c\u0435|\u043f\u043e\u0434\u0430\u0442\u044c\s+\u0437\u0430\u044f\u0432\u043a\u0443)\b",
     re.I,
 )
 _MAX_BYTES = 2_000_000
 _MAX_REDIRECTS = 4
+_MAX_APPLICATION_HOPS = 3
 
 
 class JobPageError(RuntimeError):
@@ -146,7 +148,21 @@ def _application_target(soup: BeautifulSoup, base_url: str) -> tuple[str, bool]:
         if _ACTION_RE.search(label):
             score = 2 if _ACTION_RE.search(anchor.get_text(" ", strip=True)) else 1
             ranked.append((score, href))
-    return (max(ranked)[1], False) if ranked else ("", False)
+    if ranked:
+        return max(ranked)[1], False
+    # Modern job boards commonly render the actual form in a JS modal. Keeping
+    # the page URL as the action lets the application layer report an auth or
+    # CAPTCHA requirement instead of pretending that no apply action exists.
+    for button in soup.find_all(["button", "input"]):
+        label = " ".join((
+            button.get_text(" ", strip=True),
+            str(button.get("value", "")),
+            str(button.get("aria-label", "")),
+            str(button.get("title", "")),
+        ))
+        if _ACTION_RE.search(label):
+            return base_url, False
+    return "", False
 
 
 def parse_job_html(html: str, page_url: str) -> ParsedJobPage:
@@ -175,3 +191,35 @@ async def fetch_job_from_message(message: str) -> ParsedJobPage:
     url = extract_first_url(message)
     html, final_url = await fetch_html(url)
     return parse_job_html(html, final_url)
+
+
+async def resolve_application_url(
+    url: str,
+    *,
+    max_hops: int = _MAX_APPLICATION_HOPS,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> str:
+    """Follow redirects and HTML apply links until the final application page.
+
+    Some shorteners (notably LinkedIn's) return an HTML interstitial with a
+    normal Apply anchor instead of an HTTP redirect. The loop handles both
+    forms without source-specific selectors and stops on cycles.
+    """
+    current = url
+    seen: set[str] = set()
+    last = url
+    for _ in range(max_hops):
+        if current in seen:
+            break
+        seen.add(current)
+        html, fetched_url = await fetch_html(current, transport=transport)
+        last = fetched_url
+        soup = BeautifulSoup(html, "html.parser")
+        target, has_form = _application_target(soup, fetched_url)
+        if has_form:
+            return fetched_url
+        if not target or target in seen or target == fetched_url:
+            return fetched_url
+        current = target
+        last = target
+    return last

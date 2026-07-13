@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -158,6 +158,11 @@ async def submit_application(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
+    host = (urlparse(page_url).hostname or "").casefold()
+    if host == "getmatch.ru" or host.endswith(".getmatch.ru"):
+        raise WebApplicationError("Getmatch requires a signed-in candidate session and email OTP before applying")
+    if host == "koronatech.ru" or host.endswith(".koronatech.ru"):
+        raise WebApplicationError("KoronaTech requires its visual CAPTCHA before the resume can be submitted")
     if not resume_path.is_file():
         raise WebApplicationError(f"Resume is missing: {resume_path.name}")
     if resume_path.stat().st_size > 2_000_000:
