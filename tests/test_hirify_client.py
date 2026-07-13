@@ -65,6 +65,45 @@ class HirifyClientTests(unittest.TestCase):
         self.assertEqual(calls.count("/auth/login"), 2)
         self.assertEqual(calls.count("/api/vacancies/732103-role/contacts"), 2)
 
+    def test_detects_and_submits_direct_application_with_completed_primary_profile(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            path = request.url.path
+            if path == "/api/vacancies/732800-python-developer":
+                return httpx.Response(200, json={"id": 732800, "can_apply_directly": True}, request=request)
+            if path == "/sanctum/csrf-cookie":
+                return httpx.Response(204, headers={"set-cookie": "XSRF-TOKEN=csrf-token; Path=/"}, request=request)
+            if path == "/auth/login":
+                return httpx.Response(200, json={"id": 1}, request=request)
+            if path == "/api/user/applications-for-vacancy/732800":
+                return httpx.Response(200, json=[], request=request)
+            if path == "/auth/user":
+                return httpx.Response(200, json={
+                    "profile_id": 22,
+                    "user_profiles": [
+                        {"profile_id": 11, "status": "completed"},
+                        {"profile_id": 22, "status": "completed"},
+                    ],
+                }, request=request)
+            if path == "/api/user/applications":
+                return httpx.Response(201, json={"data": {"id": 991}}, request=request)
+            raise AssertionError(path)
+
+        async def run():
+            async with HirifyClient("user@example.com", "secret", transport=httpx.MockTransport(handler)) as client:
+                direct = await client.get_direct_application("https://hirify.me/jobs/732800-python-developer")
+                application_id = await client.apply_direct(direct.vacancy_id)
+                return direct, application_id
+
+        direct, application_id = asyncio.run(run())
+        self.assertEqual(direct.vacancy_id, 732800)
+        self.assertEqual(application_id, 991)
+        submitted = next(request for request in requests if request.url.path == "/api/user/applications")
+        self.assertEqual(submitted.headers["x-xsrf-token"], "csrf-token")
+        self.assertIn(b'"profile_id":22', submitted.content)
+
 
 if __name__ == "__main__":
     unittest.main()
