@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +14,9 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 
 from .rating import RatingReport, StageRating
+from job_page import validate_public_url
+from token_free import select_resume
+from web_application import WebApplicationError, build_form_payload, load_profile
 
 
 class TelegramFlowError(RuntimeError):
@@ -132,14 +135,17 @@ def review_bot_output(
 
     has_resume = any(message.has_document for message in messages)
     action_buttons = tuple(button for message in messages for button in message.buttons)
+    application_error = next(
+        (line for line in combined.splitlines() if line.startswith("Application failed:")), ""
+    )
     has_application_result = any(
         marker in combined for marker in ("Contact: @", "Apply: ", "No cover message", "Recruiter message:")
     ) or bool(action_buttons)
-    application_passed = parse_passed and classification_passed and has_resume and has_application_result
+    application_passed = parse_passed and classification_passed and has_resume and has_application_result and not application_error
     application = StageRating(
         "application", application_passed, 30 if application_passed else 0, 30,
-        "Bot produced a resume and non-submitting application preview" if application_passed else "Bot did not reach the resume/application preview",
-        {"has_resume_document": has_resume, "buttons_observed_not_clicked": action_buttons, "has_application_result": has_application_result},
+        "Bot produced a resume and non-submitting application preview" if application_passed else application_error or "Bot did not reach the resume/application preview",
+        {"has_resume_document": has_resume, "buttons_observed_not_clicked": action_buttons, "has_application_result": has_application_result, "application_error": application_error},
     )
     stages = (parser, classification, application)
     score = sum(stage.points for stage in stages)
@@ -153,4 +159,44 @@ def review_bot_output(
         status="passed" if all(stage.passed for stage in stages) else "failed",
         stages=stages,
     )
+
+
+async def preflight_application_page(
+    report: RatingReport,
+    messages: tuple[ObservedMessage, ...],
+    *,
+    resume_dir: Path,
+    profile_path: Path,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> RatingReport:
+    """Exercise Jobbot's form parser without posting an application."""
+    combined = "\n".join(message.text for message in messages)
+    match = re.search(r"(?m)^Apply:\s*(https?://\S+)", combined)
+    if not match or report.direction == "other":
+        return report
+    apply_url = match.group(1)
+    try:
+        resume_path = select_resume(report.direction, resume_dir)
+        profile = load_profile(profile_path, resume_path)
+        await validate_public_url(apply_url)
+        async with httpx.AsyncClient(
+            timeout=20.0, follow_redirects=True, transport=transport
+        ) as client:
+            response = await client.get(apply_url)
+            response.raise_for_status()
+        build_form_payload(response.text, str(response.url), profile)
+        return report
+    except (WebApplicationError, httpx.HTTPError, OSError) as exc:
+        application = StageRating(
+            "application", False, 0, 30,
+            f"Application preflight failed: {exc}",
+            {"apply_url": apply_url, "error": f"{type(exc).__name__}: {exc}", "submitted": False},
+        )
+        stages = tuple(application if stage.stage == "application" else stage for stage in report.stages)
+        return replace(
+            report,
+            score=sum(stage.points for stage in stages),
+            status="failed",
+            stages=stages,
+        )
 
