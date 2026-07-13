@@ -44,7 +44,11 @@ class RalphFirstLoopTests(unittest.TestCase):
             messages,
             expected_direction="data_engineering",
         )
-        self.assertEqual(report.score, 40)
+        # New scoring: parser(40) + classification(0) + applicant_profile(20) + application(0) = 60
+        self.assertEqual(report.score, 60)
+        # applicant_profile now passes by default in telegram_flow (20 points)
+        # classification fails (expected data_engineering, got other or unsupported)
+        # application fails (no resume, no application result)
         self.assertEqual([failure.stage for failure in report.failures], ["classification", "application"])
 
     def test_reviews_successful_telegram_chain_without_clicking(self):
@@ -54,8 +58,25 @@ class RalphFirstLoopTests(unittest.TestCase):
             ObservedMessage("Recruiter message:\n\nHello", buttons=("Apply with resume", "Skip")),
         )
         report = review_bot_output("https://hirify.me/jobs/1", messages, expected_direction="data_engineering")
-        self.assertEqual(report.score, 100)
+        # New scoring: parser(40) + classification(30) + applicant_profile(20) + application(20) = 110
+        self.assertEqual(report.score, 110)
         self.assertEqual(report.status, "passed")
+
+    def test_reviews_applicant_profile_error(self):
+        messages = (
+            ObservedMessage("Direction: data_engineering\nRole: DataOps Engineer\nCompany: Example"),
+            ObservedMessage("Selected resume", has_document=True),
+            ObservedMessage("Application failed: Applicant profile is missing required fields: name, phone, urls[LinkedIn]"),
+        )
+        report = review_bot_output("https://hirify.me/jobs/1", messages, expected_direction="data_engineering")
+        # applicant_profile should fail with 0 points
+        # parser(40) + classification(30) + applicant_profile(0) + application(0) = 70
+        self.assertEqual(report.score, 70)
+        self.assertEqual([failure.stage for failure in report.failures], ["applicant_profile", "application"])
+        # Check that the applicant_profile failure contains the right evidence
+        profile_failure = next(f for f in report.failures if f.stage == "applicant_profile")
+        self.assertIn("missing required fields", profile_failure.summary)
+        self.assertEqual(profile_failure.evidence["error_type"], "applicant_profile_missing_fields")
 
     def test_extracts_unique_hirify_job_urls(self):
         html = '<a href="/jobs/10-python">one</a><a href="https://hirify.me/jobs/10-python?utm=x">dup</a><a href="/about">no</a>'
@@ -66,14 +87,17 @@ class RalphFirstLoopTests(unittest.TestCase):
             StageRating("parser", True, 40, 40, "Required vacancy fields were parsed", {}),
             StageRating("classification", True, 30, 30, "Classified as backend_python", {}),
             StageRating(
-                "application", False, 0, 30,
+                "applicant_profile", True, 20, 20, "Applicant profile stage requires Telegram flow for validation", {}
+            ),
+            StageRating(
+                "application", False, 0, 20,
                 "Application target is a same-page JavaScript flow with no discoverable static form",
                 {"apply_url": "https://jobs.example/42", "same_page_target": True},
             ),
         )
         return RatingReport(
             "https://jobs.example/42", "jobs.example", "Senior Python Engineer",
-            "Example", "backend_python", 70, "failed", stages,
+            "Example", "backend_python", 90, "failed", stages,
         )
 
     def test_records_and_deduplicates_failure(self):
@@ -104,4 +128,3 @@ class RalphFirstLoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

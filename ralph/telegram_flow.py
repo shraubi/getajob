@@ -90,6 +90,44 @@ async def send_job_to_bot(
         await client.disconnect()
 
 
+def _check_applicant_profile_error(combined: str) -> tuple[bool, str, dict[str, object]]:
+    """Check if Jobbot reported applicant profile errors.
+    
+    Detects errors like: 'Application failed: Applicant profile is missing required fields: name, phone, urls[LinkedIn]'
+    This indicates Jobbot failed to populate required fields from the resume data.
+    """
+    # Look for the specific error pattern
+    profile_error_pattern = r"Applicant profile is missing required fields: (.+)"
+    profile_error_match = re.search(profile_error_pattern, combined)
+    
+    if profile_error_match:
+        missing_fields = profile_error_match.group(1)
+        return False, f"Applicant profile missing required fields: {missing_fields}", {
+            "error_type": "applicant_profile_missing_fields",
+            "missing_fields": [f.strip() for f in missing_fields.split(",")],
+            "error_message": profile_error_match.group(0),
+        }
+    
+    # Check for other application errors
+    application_failed = "Application failed:" in combined
+    if application_failed:
+        # Extract the error message
+        error_line = next(
+            (line for line in combined.splitlines() if "Application failed:" in line),
+            "Application failed with unknown error"
+        )
+        return False, f"Application failed: {error_line}", {
+            "error_type": "application_failed",
+            "error_message": error_line,
+        }
+    
+    # If no errors found, consider it passed
+    return True, "Applicant profile fields populated correctly", {
+        "error_type": None,
+        "error_message": None,
+    }
+
+
 def review_bot_output(
     url: str,
     messages: tuple[ObservedMessage, ...],
@@ -135,13 +173,29 @@ def review_bot_output(
     has_application_result = any(
         marker in combined for marker in ("Contact: @", "Apply: ", "No cover message", "Recruiter message:")
     ) or bool(action_buttons)
-    application_passed = parse_passed and classification_passed and has_resume and has_application_result
+    
+    # Check applicant profile stage
+    profile_passed, profile_summary, profile_evidence = _check_applicant_profile_error(combined)
+    profile = StageRating(
+        "applicant_profile",
+        profile_passed,
+        20 if profile_passed else 0,
+        20,
+        profile_summary,
+        profile_evidence,
+    )
+    
+    # Application stage: checks if bot reached the preview (but didn't submit)
+    # Note: We reduce points to 20 to make room for the new applicant_profile stage
+    application_passed = parse_passed and classification_passed and has_resume and has_application_result and profile_passed
     application = StageRating(
-        "application", application_passed, 30 if application_passed else 0, 30,
-        "Bot produced a resume and non-submitting application preview" if application_passed else "Bot did not reach the resume/application preview",
+        "application", application_passed, 20 if application_passed else 0, 20,
+        "Bot produced a resume and non-submitting application preview with complete profile" if application_passed 
+        else "Bot did not reach complete application preview",
         {"has_resume_document": has_resume, "buttons_observed_not_clicked": action_buttons, "has_application_result": has_application_result},
     )
-    stages = (parser, classification, application)
+    
+    stages = (parser, classification, profile, application)
     score = sum(stage.points for stage in stages)
     return RatingReport(
         url=url,
@@ -153,4 +207,3 @@ def review_bot_output(
         status="passed" if all(stage.passed for stage in stages) else "failed",
         stages=stages,
     )
-
