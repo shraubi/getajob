@@ -12,6 +12,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 YOUR_CHAT_ID = int(os.environ["YOUR_CHAT_ID"])
+ALLOWED_CHAT_IDS = {YOUR_CHAT_ID, 5444315156}
 TOKEN_FREE_MODE = _bool_env("TOKEN_FREE_MODE")
 RESUME_DIR = Path(os.environ.get("RESUME_DIR", "data/resumes"))
 JOBS_DB_PATH = Path(os.environ.get("JOBS_DB_PATH", "storage/jobs.db"))
