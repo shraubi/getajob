@@ -1,11 +1,17 @@
 .env
+.venv/
+.tools/
 __pycache__/
 *.pyc
 *.pyo
 ca-certificates.crt
 storage/chroma_db/
 storage/jobs.db*
+storage/ralph*.db*
+storage/ralph*.json
+storage/ralph_first_loop_completed
 storage/telegram_sender.session*
 logs/applications.jsonl
 data/resumes/*
 !data/resumes/.gitkeep
+
