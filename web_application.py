@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -17,7 +18,7 @@ from token_free import extract_resume_text
 _MAX_PAGE_BYTES = 2_000_000
 _SUCCESS_RE = re.compile(
     r"thank\s+you|application\s+(?:was\s+)?(?:sent|submitted|received)|"
-    r"candidature\s+(?:a\s+(?:ete|été)\s+)?(?:envoyee|envoyée|transmise|reçue)|"
+    r"candidature\s+(?:a\s+ete\s+)?(?:envoyee|transmise)|"
     r"merci\s+pour\s+votre\s+candidature",
     re.I,
 )
@@ -75,6 +76,11 @@ def _profile_value(tag, profile: ApplicantProfile) -> str:
     if any(marker in key for marker in ("phone", "tel", "mobile")) or tag.get("type") == "tel":
         return profile.phone
     return ""
+
+
+def _searchable_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
 def build_form_payload(html: str, page_url: str, profile: ApplicantProfile, message: str = ""):
@@ -186,7 +192,8 @@ async def submit_application(
                 response.raise_for_status()
                 result_html = await _read_response(response)
         result_soup = BeautifulSoup(result_html, "html.parser")
-        confirmed = bool(_SUCCESS_RE.search(result_soup.get_text(" ", strip=True)))
+        result_text = _searchable_text(result_soup.get_text(" ", strip=True))
+        confirmed = bool(_SUCCESS_RE.search(result_text))
         redirected_to_confirmation = str(response.url) != action and not result_soup.find("input", attrs={"type": "file"})
         if not confirmed and not redirected_to_confirmation:
             raise WebApplicationError("The application form was returned without a success confirmation")
