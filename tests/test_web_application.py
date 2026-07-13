@@ -36,7 +36,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(action, "https://jobs.example/42")
         self.assertEqual(file_field, "cv")
         self.assertEqual(data["prenom"], "Ekaterina")
-        self.assertEqual(data["nom"], "Ekaterina".replace("Ekaterina", "Tuganova"))
+        self.assertEqual(data["nom"], "Tuganova")
         self.assertEqual(data["q1"], "0")
         self.assertEqual(data["q3"], "1")
 
