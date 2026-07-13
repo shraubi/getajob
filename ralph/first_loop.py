@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from .rating import rate_job
 from .store import record_report, render_issue
-from .telegram_flow import review_bot_output, send_job_to_bot
+from .telegram_flow import preflight_application_page, review_bot_output, send_job_to_bot
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +46,12 @@ def main() -> None:
             bot_token=bot_token,
         ))
         report = review_bot_output(args.url, messages, expected_direction=args.expected_direction)
+        report = asyncio.run(preflight_application_page(
+            report,
+            messages,
+            resume_dir=Path(os.environ.get("RESUME_DIR", "data/resumes")),
+            profile_path=Path(os.environ.get("APPLICATION_PROFILE_PATH", "storage/applicant.json")),
+        ))
     run_id, _ = record_report(args.db, report)
     issue = render_issue(report, run_id, report.failures[0]) if report.failures else None
     payload = {"run_id": run_id, "telegram_run_id": telegram_run_id, "report": report.to_dict(), "issue": issue}
