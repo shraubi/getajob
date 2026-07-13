@@ -61,14 +61,6 @@ class RalphLoopTests(unittest.TestCase):
 
     def test_loop_discovery_with_mock(self):
         async def test_discovery():
-            # Create a mock transport for httpx
-            async def handler(request):
-                if request.method == "GET":
-                    # Return a simple HTML page with job links
-                    html = '<a href="/jobs/1">Job 1</a><a href="/jobs/2">Job 2</a>'
-                    return httpx.Response(200, text=html, request=request)
-                return httpx.Response(404, request=request)
-            
             config = LoopConfig(
                 filter_source="hirify",
                 feed_url="https://hirify.me/",
@@ -91,10 +83,13 @@ class RalphLoopTests(unittest.TestCase):
                 result = await run_loop(config)
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["discovered"], 2)
-                # In dry-run mode, known URLs are not read, so all are new
+                # In dry-run mode, known URLs are still read from DB
                 self.assertEqual(result["known"], 0)
                 self.assertEqual(result["new"], 2)
                 self.assertEqual(result["processed"], 2)
+                # Check that via_telegram is False (no Telegram creds in test)
+                for r in result["results"]:
+                    self.assertFalse(r.get("via_telegram", False))
             finally:
                 loop_module.fetch_hirify_feed = original_fetch
         
@@ -120,13 +115,12 @@ class RalphLoopTests(unittest.TestCase):
                 finally:
                     connection.close()
                 
-                # Use dry_run=False to test URL skipping
                 config = LoopConfig(
                     filter_source="hirify",
                     feed_url="https://hirify.me/",
                     limit=10,
                     db_path=db_path,
-                    dry_run=False,  # Not dry-run so it reads known URLs
+                    dry_run=False,  # Not dry-run so it reads and writes to DB
                     quiet=True,
                 )
                 

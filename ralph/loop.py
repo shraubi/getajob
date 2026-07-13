@@ -119,10 +119,9 @@ async def process_job(
     if config.quiet:
         print(f"  Processing: {url}")
     
-    # In dry-run mode, always use direct rating (no Telegram)
-    # In production mode, use Telegram if all credentials are configured
+    # Check if we should use Telegram flow or direct rating
+    # Use Telegram if all credentials are configured and session path exists
     use_telegram = (
-        not config.dry_run and
         config.telegram_api_id and
         config.telegram_api_hash and
         config.telegram_bot_token and
@@ -161,8 +160,9 @@ async def process_job(
             }
     else:
         # Direct rating only
-        if config.quiet and not config.dry_run:
-            print(f"    Using direct rating (Telegram not configured or dry-run)")
+        if config.quiet:
+            reason = "dry-run" if config.dry_run else "Telegram not configured"
+            print(f"    Using direct rating ({reason})")
         report = await rate_job(url, expected_direction=expected_direction)
         result = {
             "url": url,
@@ -291,16 +291,13 @@ async def run_loop(config: LoopConfig) -> dict[str, Any]:
     skipped: list[str] = []
     errors: list[dict[str, Any]] = []
     
-    # Get known URLs to skip (unless dry-run, then don't skip any)
-    if not config.dry_run:
-        known_urls = get_known_urls(config.db_path)
-    else:
-        known_urls = set()
+    # Get known URLs to skip
+    known_urls = get_known_urls(config.db_path)
     
     if config.quiet:
         print(f"Starting Ralph loop at {start_time.isoformat()}")
         if config.dry_run:
-            print("  Mode: DRY-RUN (no Telegram, no GitHub, no DB writes)")
+            print("  Mode: DRY-RUN (no GitHub issues, no DB writes)")
         print(f"Known URLs to skip: {len(known_urls)}")
     
     # Discover fresh jobs
@@ -335,7 +332,8 @@ async def run_loop(config: LoopConfig) -> dict[str, Any]:
                 results.append(result)
                 if config.quiet:
                     status = "PASS" if result["report"].status == "passed" else "FAIL"
-                    print(f"    [{status}] {url} -> score={result['report'].score}, failures={len(result['report'].failures)}")
+                    via = "Telegram" if result.get("via_telegram") else "Direct"
+                    print(f"    [{status}] {url} -> score={result['report'].score}, via={via}, failures={len(result['report'].failures)}")
         except Exception as exc:
             errors.append({"url": url, "error": str(exc)})
             if config.quiet:
@@ -401,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Don't create GitHub issues, send to Telegram, or write to DB",
+        help="Don't create GitHub issues or write to DB (but still uses Telegram)",
     )
     parser.add_argument(
         "--quiet",
@@ -443,14 +441,14 @@ def main() -> None:
         quiet=not args.quiet,  # Invert: quiet flag suppresses output
     )
     
-    # Validate Telegram config if not dry run
-    if not args.dry_run:
-        if not config.telegram_api_id or not config.telegram_api_hash or not config.telegram_bot_token:
-            if not args.quiet:
-                print("Warning: Telegram credentials not fully configured, will use direct rating only")
-        elif not config.session_path or not config.session_path.exists():
+    # Validate Telegram config
+    if config.telegram_api_id and config.telegram_api_hash and config.telegram_bot_token:
+        if not config.session_path or not config.session_path.exists():
             if not args.quiet:
                 print(f"Warning: Telegram session path not found or doesn't exist: {config.session_path}, will use direct rating only")
+    else:
+        if not args.quiet:
+            print("Warning: Telegram credentials not fully configured, will use direct rating only")
     
     loop_result = asyncio.run(run_loop(config))
     
