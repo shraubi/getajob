@@ -21,6 +21,7 @@ TELEGRAM_API_ID = int(os.environ.get("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_PHONE = os.environ.get("TELEGRAM_PHONE", "")
 TELEGRAM_SESSION_PATH = Path(os.environ.get("TELEGRAM_SESSION_PATH", "storage/telegram_sender"))
+APPLICATION_PROFILE_PATH = Path(os.environ.get("APPLICATION_PROFILE_PATH", "storage/applicant.json"))
 
 # Optional legacy LLM path.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
