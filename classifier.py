@@ -26,7 +26,9 @@ DEFAULT_WEIGHTS: dict[str, dict[str, int]] = {
     },
     "tech_support": {
         "technical support": 7, "tech support": 7, "support engineer": 6,
-        "техническая поддержка": 7, "техподдержка": 7,
+        "customer support": 6, "payment support": 8, "support manager": 6,
+        "техническая поддержка": 7, "технической поддержки": 8, "техподдержка": 7,
+        "специалист поддержки": 7, "специалист технической поддержки": 9,
         "инженер поддержки": 6, "help desk": 4, "troubleshooting": 3, "ticketing": 2,
     },
 }
@@ -40,8 +42,9 @@ _ROLE_MARKERS = {
     ),
     "devops": ("devops", "sre", "platform engineer", "инженер инфраструктуры"),
     "tech_support": (
-        "technical support", "tech support", "support engineer", "техническая поддержка",
-        "техподдержка", "инженер поддержки", "help desk",
+        "technical support", "tech support", "support engineer", "customer support", "payment support",
+        "support manager", "техническая поддержка", "технической поддержки", "техподдержка",
+        "специалист поддержки", "специалист технической поддержки", "инженер поддержки", "help desk",
     ),
 }
 
