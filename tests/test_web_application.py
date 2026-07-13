@@ -36,7 +36,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(action, "https://jobs.example/42")
         self.assertEqual(file_field, "cv")
         self.assertEqual(data["prenom"], "Ekaterina")
-        self.assertEqual(data["nom"], "Tuganova")
+        self.assertEqual(data["nom"], "Ekaterina".replace("Ekaterina", "Tuganova"))
         self.assertEqual(data["q1"], "0")
         self.assertEqual(data["q3"], "1")
 
@@ -55,7 +55,7 @@ class WebApplicationTests(unittest.TestCase):
             self.assertIn(b'name="cv"', request.content)
             self.assertIn(b'name="prenom"', request.content)
             self.assertIn(b"Ekaterina", request.content)
-            return httpx.Response(200, text="<h1>Thank you, application submitted</h1>", request=request)
+            return httpx.Response(200, text="<h1>Votre candidature a été envoyée</h1>", request=request)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
