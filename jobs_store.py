@@ -170,6 +170,11 @@ def claim_telegram_job_for_send(
     try:
         connection.execute("BEGIN IMMEDIATE")
         _ensure_schema(connection)
+        target = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not target or target[0] not in {"parsed", "send_failed"}:
+            connection.rollback()
+            return False, None, ""
+
         cooldown = connection.execute(
             "SELECT blocked_until, reason FROM sender_cooldowns WHERE channel='telegram'"
         ).fetchone()
