@@ -42,8 +42,12 @@ def _get_hirify_client() -> HirifyClient:
     return _hirify_client
 
 
+def _target_chat_id(ctx) -> int:
+    return int(getattr(ctx, "_chat_id", None) or config.YOUR_CHAT_ID)
+
+
 async def _notify(ctx, text: str, **kwargs):
-    await ctx.bot.send_message(chat_id=config.YOUR_CHAT_ID, text=text, **kwargs)
+    await ctx.bot.send_message(chat_id=_target_chat_id(ctx), text=text, **kwargs)
 
 
 async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
@@ -119,7 +123,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
     await _notify(ctx, "\n".join(summary))
     with draft.resume_path.open("rb") as resume:
         await ctx.bot.send_document(
-            chat_id=config.YOUR_CHAT_ID,
+            chat_id=_target_chat_id(ctx),
             document=resume,
             filename=draft.resume_path.name,
             caption=f"Selected resume: {draft.direction}",
@@ -146,7 +150,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
 
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or msg.chat.id != config.YOUR_CHAT_ID:
+    if not msg or msg.chat.id not in config.ALLOWED_CHAT_IDS:
         return
     text = msg.text or msg.caption or ""
     if not text:
@@ -181,7 +185,7 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         await _notify(ctx, f"PDF render error: {exc}")
         return
     pdf_msg = await ctx.bot.send_document(
-        chat_id=config.YOUR_CHAT_ID,
+        chat_id=_target_chat_id(ctx),
         document=pdf_bytes,
         filename=f"CV_{result.company.replace(' ', '_')}.pdf",
         caption=f"CV for {result.company}",
@@ -192,7 +196,7 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         InlineKeyboardButton("Skip", callback_data=f"skip:{pdf_msg.message_id}"),
     ]])
     await ctx.bot.send_message(
-        chat_id=config.YOUR_CHAT_ID,
+        chat_id=_target_chat_id(ctx),
         text=f"Recruiter message:\n\n{result.message}",
         reply_markup=keyboard,
     )

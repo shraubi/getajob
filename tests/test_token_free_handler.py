@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("YOUR_CHAT_ID", "1")
 
-from bot.handlers import _handle_token_free
+from bot.handlers import _handle_token_free, _target_chat_id
 from job_page import JobPageError, ParsedJobPage
 from token_free import ApplicationDraft, UnknownDirectionError, Vacancy
 
@@ -37,6 +37,9 @@ class FakeHirifyClient:
 
 
 class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_routes_replies_to_the_initiating_allowed_chat(self):
+        self.assertEqual(_target_chat_id(SimpleNamespace(_chat_id=5444315156)), 5444315156)
+
     async def test_unsupported_role_stops_without_resume_or_send_button(self):
         vacancy = Vacancy(
             "Android Developer (Kotlin)", "VK", "Android mobile development with Kotlin",
