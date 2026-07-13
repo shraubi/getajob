@@ -257,6 +257,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not job or job["contact_kind"] != "telegram":
             await query.edit_message_text("Saved Telegram application not found.")
             return
+        if not config.TELEGRAM_SENDING_ENABLED:
+            await query.edit_message_text("Telegram sending is disabled; no message was sent.")
+            return
         claimed, retry_at, reason = claim_telegram_job_for_send(
             config.JOBS_DB_PATH,
             job["id"],
