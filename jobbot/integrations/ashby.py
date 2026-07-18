@@ -410,6 +410,7 @@ async def _submit_with_playwright(
     headless: bool,
 ) -> AshbySubmissionResult:
     try:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
         from playwright.async_api import async_playwright
     except ImportError as exc:
         raise AshbyError("Playwright is not installed for Ashby browser submission") from exc
@@ -423,14 +424,28 @@ async def _submit_with_playwright(
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(preflight.posting.page.apply_url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(1_000)
+            try:
+                await page.wait_for_selector(
+                    '[data-field-path="_systemfield_name"], [name="_systemfield_name"]',
+                    state="visible",
+                    timeout=20_000,
+                )
+            except PlaywrightTimeoutError as exc:
+                input_names = await page.locator("input[name], textarea[name], select[name]").evaluate_all(
+                    "(elements) => elements.map((element) => element.name).filter(Boolean)"
+                )
+                raise AshbyError(
+                    "Ashby application form did not render within 20 seconds "
+                    f"(url={page.url}, title={await page.title()!r}, "
+                    f"visible field names={input_names[:20]})"
+                ) from exc
 
             for field in preflight.posting.fields:
                 if field.path not in preflight.submissions:
                     continue
                 value = preflight.submissions[field.path]
-                selector = f'[name={json.dumps(field.path)}]'
-                container_selector = f'[data-field-path={json.dumps(field.path)}]'
+                selector = f'[name={json.dumps(field.path)}]:visible'
+                container_selector = f'[data-field-path={json.dumps(field.path)}]:visible'
                 control = page.locator(selector)
                 container = page.locator(container_selector)
 
@@ -487,8 +502,15 @@ async def _submit_with_playwright(
                     await option.click()
                     continue
 
-                if await control.count() != 1:
-                    raise AshbyError(f"Could not locate Ashby field: {field.title}")
+                if await control.count() == 0:
+                    field_names = await page.locator("input[name], textarea[name], select[name]").evaluate_all(
+                        "(elements) => elements.map((element) => element.name).filter(Boolean)"
+                    )
+                    raise AshbyError(
+                        f"Could not locate Ashby field: {field.title} [{field.path}] "
+                        f"(url={page.url}, visible field names={field_names[:20]})"
+                    )
+                control = control.first
                 if isinstance(value, dict):
                     if field.path == "_systemfield_location":
                         text_value = str(value.get("country") or value.get("city") or "").strip()
