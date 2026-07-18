@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,39 @@ _ASHBY_HOST = "jobs.ashbyhq.com"
 _PATH_RE = re.compile(
     r"^/(?P<board>[^/?#]+)/(?P<job>[0-9a-fA-F-]{36})(?:/application)?/?$"
 )
+_DIAGNOSTIC_EMAIL_RE = re.compile(
+    r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
+)
+_DIAGNOSTIC_SECRET_RE = re.compile(
+    r"(?i)\b(authorization|cookie|password|secret|token)\s*[:=]\s*\S+"
+)
+logger = logging.getLogger(__name__)
+
+
+def _diagnostic_text(value: object, *, limit: int = 300) -> str:
+    """Return bounded diagnostic text without applicant data or credentials."""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    text = _DIAGNOSTIC_EMAIL_RE.sub("[email]", text)
+    text = _DIAGNOSTIC_SECRET_RE.sub(r"\1=[redacted]", text)
+    if len(text) > limit:
+        return text[: limit - 1] + "…"
+    return text
+
+
+def _diagnostic_url(value: object) -> str:
+    parsed = urlparse(str(value))
+    if not parsed.scheme or not parsed.netloc:
+        return _diagnostic_text(value)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _append_diagnostic(events: list[str], value: object) -> None:
+    event = _diagnostic_text(value)
+    if event:
+        events.append(event)
+        del events[:-20]
+
+
 _FIELD_CONTAINER_XPATH = (
     "xpath=ancestor::*["
     "self::fieldset or "
@@ -436,6 +470,47 @@ async def _submit_with_playwright(
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
+            diagnostic_events: list[str] = []
+
+            def capture_console(message) -> None:
+                if message.type in {"warning", "error"}:
+                    _append_diagnostic(
+                        diagnostic_events,
+                        f"console {message.type}: {message.text}",
+                    )
+
+            def capture_page_error(error) -> None:
+                _append_diagnostic(
+                    diagnostic_events,
+                    f"page error: {type(error).__name__}: {error}",
+                )
+
+            def capture_request_failure(request) -> None:
+                _append_diagnostic(
+                    diagnostic_events,
+                    f"request failed: {request.method} "
+                    f"{_diagnostic_url(request.url)} ({request.failure})",
+                )
+
+            def capture_response(response) -> None:
+                if response.request.method == "POST" or response.status >= 400:
+                    _append_diagnostic(
+                        diagnostic_events,
+                        f"response: {response.request.method} {response.status} "
+                        f"{_diagnostic_url(response.url)}",
+                    )
+
+            page.on("console", capture_console)
+            page.on("pageerror", capture_page_error)
+            page.on("requestfailed", capture_request_failure)
+            page.on("response", capture_response)
+
+            logger.info(
+                "Ashby submission opening url=%s headless=%s fields=%d",
+                _diagnostic_url(preflight.posting.page.apply_url),
+                headless,
+                len(preflight.submissions),
+            )
             await page.goto(preflight.posting.page.apply_url, wait_until="domcontentloaded", timeout=30_000)
             try:
                 await page.locator(".ashby-application-form-field-entry").first.wait_for(
@@ -597,10 +672,25 @@ async def _submit_with_playwright(
                     "Could not identify a unique submit control "
                     f"(visible controls={submit_labels})"
                 )
+            selected_submit_label = _diagnostic_text(
+                submit_labels[submit_index]
+            )
             initial_url = page.url
+            logger.info(
+                "Ashby submission clicking control=%r url=%s visible_controls=%s",
+                selected_submit_label,
+                _diagnostic_url(initial_url),
+                [_diagnostic_text(label, limit=80) for label in submit_labels],
+            )
             await submit_controls.nth(submit_index).click()
+            logger.info(
+                "Ashby submission click completed control=%r url=%s",
+                selected_submit_label,
+                _diagnostic_url(page.url),
+            )
 
-            for _ in range(60):
+            last_snapshot = ""
+            for attempt in range(60):
                 await page.wait_for_timeout(500)
 
                 success_regions = page.locator(
@@ -646,23 +736,118 @@ async def _submit_with_playwright(
                     challenge_present=challenge_visible,
                     challenge_text="Interactive verification is required",
                 )
+
+                invalid_controls = page.locator(
+                    'input:invalid:visible, textarea:invalid:visible, '
+                    'select:invalid:visible, [aria-invalid="true"]:visible'
+                )
+                invalid_details = await invalid_controls.evaluate_all(
+                    """(elements) => elements.map((element) => ({
+                        field: (
+                            element.getAttribute("aria-label") ||
+                            element.name ||
+                            element.id ||
+                            element.type ||
+                            element.tagName
+                        ),
+                        message: (
+                            element.validationMessage ||
+                            element.getAttribute("aria-errormessage") ||
+                            ""
+                        )
+                    }))"""
+                )
+                live_texts = [
+                    _diagnostic_text(text, limit=160)
+                    for text in await page.locator(
+                        '[role="status"]:visible, [aria-live]:visible'
+                    ).all_inner_texts()
+                    if text.strip()
+                ][:6]
+                heading_texts = [
+                    _diagnostic_text(text, limit=120)
+                    for text in await page.locator(
+                        "h1:visible, h2:visible, h3:visible"
+                    ).all_inner_texts()
+                    if text.strip()
+                ][:6]
+                current_submit_labels = await page.locator(
+                    'button:visible, input[type="submit"]:visible, '
+                    '[role="button"]:visible'
+                ).evaluate_all(
+                    """(elements) => elements.map((element) => (
+                        element.innerText ||
+                        element.value ||
+                        element.getAttribute("aria-label") ||
+                        element.getAttribute("title") ||
+                        ""
+                    ).trim())"""
+                )
+                form_still_present = await page.locator(
+                    ".ashby-application-form-field-entry, input[type=\"file\"]"
+                ).count() > 0
+                snapshot = _diagnostic_text(
+                    {
+                        "url": _diagnostic_url(page.url),
+                        "form_present": form_still_present,
+                        "submit_controls": [
+                            _diagnostic_text(label, limit=80)
+                            for label in current_submit_labels
+                        ],
+                        "success_visible": success_visible,
+                        "failure_messages": failure_messages,
+                        "challenge_visible": challenge_visible,
+                        "invalid_controls": invalid_details,
+                        "live_regions": live_texts,
+                        "headings": heading_texts,
+                    },
+                    limit=1800,
+                )
+                if snapshot != last_snapshot:
+                    logger.info(
+                        "Ashby submission state attempt=%d %s",
+                        attempt + 1,
+                        snapshot,
+                    )
+                    last_snapshot = snapshot
+
                 if outcome is not None:
+                    logger.info(
+                        "Ashby submission outcome status=%s detail=%s url=%s events=%s",
+                        outcome.status,
+                        _diagnostic_text(outcome.detail),
+                        _diagnostic_url(page.url),
+                        diagnostic_events,
+                    )
                     return AshbySubmissionResult(
                         outcome.status,
                         page.url,
                         outcome.detail,
                     )
-                form_still_present = await page.locator(
-                    ".ashby-application-form-field-entry, input[type=\"file\"]"
-                ).count() > 0
                 if page.url != initial_url and not form_still_present:
+                    logger.info(
+                        "Ashby submission inferred from navigation initial_url=%s "
+                        "final_url=%s events=%s",
+                        _diagnostic_url(initial_url),
+                        _diagnostic_url(page.url),
+                        diagnostic_events,
+                    )
                     return AshbySubmissionResult(
                         "submitted", page.url, "Application form completed"
                     )
+            diagnostic_summary = _diagnostic_text(
+                f"state={last_snapshot}; events={diagnostic_events[-8:]}",
+                limit=2600,
+            )
+            logger.warning(
+                "Ashby submission outcome remained pending after 30s: %s",
+                diagnostic_summary,
+            )
             return AshbySubmissionResult(
                 "manual_required",
                 page.url,
-                "The form did not expose a verifiable submission outcome",
+                "The form did not expose a verifiable submission outcome.\n"
+                f"Diagnostics: {diagnostic_summary}",
             )
         finally:
             await context.close()
