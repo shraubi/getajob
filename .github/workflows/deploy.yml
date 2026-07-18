@@ -30,5 +30,6 @@ jobs:
             docker image prune -af
             docker builder prune -af --keep-storage 1GB
             docker compose build --pull bot ralph
+            docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
             docker compose up -d bot ralph
             docker image prune -af
