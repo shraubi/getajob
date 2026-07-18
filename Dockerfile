@@ -21,13 +21,8 @@ RUN mkdir -p /app/data/resumes /app/storage
 
 FROM runtime AS bot
 RUN python -m playwright install-deps chromium \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends xauth \
     && rm -rf /var/lib/apt/lists/* /root/.cache
-# Ashby's invisible reCAPTCHA issues its token in a normal headed browser but
-# stalls in Chromium's headless mode. Xvfb supplies a private virtual display
-# without exposing a remote desktop or weakening challenge handling.
-CMD ["xvfb-run", "-a", "--error-file=/dev/stderr", "--server-args=-screen 0 1280x1024x24", "python", "main.py"]
+CMD ["python", "main.py"]
 
 FROM runtime AS ralph
 CMD ["python", "-m", "ralph.watch_events"]
