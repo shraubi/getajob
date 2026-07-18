@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from .event_review import analyze_events, event_urls, read_event_batch
+from .github_issues import GitHubIssueOutbox
 from .models import ReviewReport
 from .store import RalphStore, write_report
 
@@ -14,6 +15,9 @@ _SOURCE_DB = Path(os.environ.get("RALPH_SOURCE_DB_PATH", "storage/jobs.db"))
 _RALPH_DB = Path(os.environ.get("RALPH_DB_PATH", "storage/ralph.db"))
 _REPORT_DIR = Path(os.environ.get("RALPH_REPORT_DIR", "storage/ralph/reviews"))
 _PEER_KEY = "jobbot-events"
+_GITHUB_REPOSITORY = os.environ.get("RALPH_GITHUB_REPOSITORY", "")
+_GITHUB_TOKEN = os.environ.get("RALPH_GITHUB_TOKEN", "")
+_GITHUB_MIN_SEVERITY = os.environ.get("RALPH_GITHUB_MIN_SEVERITY", "medium")
 
 def review_once() -> tuple[ReviewReport, Path] | None:
     store = RalphStore(_RALPH_DB)
@@ -31,6 +35,9 @@ def review_once() -> tuple[ReviewReport, Path] | None:
     )
     output = _REPORT_DIR / f"events-{review_id}.json"
     write_report(report, output)
+    GitHubIssueOutbox(_RALPH_DB).enqueue_report(
+        report, min_severity=_GITHUB_MIN_SEVERITY
+    )
     store.save_review(report, output)
     return report, output
 
@@ -53,8 +60,16 @@ def main(argv: list[str] | None = None) -> int:
         result = review_once()
         if result:
             _print(*result)
-            if result[0].has_more:
-                continue
+        created, failed = GitHubIssueOutbox(_RALPH_DB).publish_pending(
+            repository=_GITHUB_REPOSITORY,
+            token=_GITHUB_TOKEN,
+        )
+        for issue_url in created:
+            print(f"GitHub issue: {issue_url}", flush=True)
+        for error in failed:
+            print(f"GitHub issue delivery failed: {error}", flush=True)
+        if result and result[0].has_more:
+            continue
         if args.once:
             return 0
         time.sleep(max(args.poll_seconds, 1.0))

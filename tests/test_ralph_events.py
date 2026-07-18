@@ -35,6 +35,20 @@ class RalphEventReviewTests(unittest.TestCase):
             self.assertTrue({"support_role_misclassified", "telegram_throttled",
                              "telegram_queue_missing"} <= rules)
 
+    def test_reports_any_zero_score_rejection_for_human_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_review_event(
+                db, "1:7", "role_rejected",
+                source_url="https://jobs.example/novel-role",
+                title="Novel Role Name",
+                scores={"backend_python": 0, "ml_engineering": 0},
+            )
+            events, _ = read_event_batch(db, after_id=0)
+            findings = analyze_events(events)
+            self.assertEqual(findings[0].rule_id, "unclassified_role_rejected")
+            self.assertEqual(findings[0].evidence["title"], "Novel Role Name")
+
     def test_ignores_expired_pages_and_stores_no_transcript_field(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"

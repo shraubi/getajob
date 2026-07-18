@@ -44,3 +44,7 @@ The `ralph` Compose service continuously reads Jobbot's structured operational j
     docker compose exec -T ralph python -m ralph.watch_events --once
 
 Every account using Jobbot must be listed in `YOUR_CHAT_ID` or `ADDITIONAL_CHAT_IDS`. Jobbot records normalized outcomes, links, classifications, preview/application availability, failures and throttles. It does not persist raw Telegram transcript or document contents.
+
+### GitHub issue publishing
+
+Set `RALPH_GITHUB_REPOSITORY` and a fine-grained `RALPH_GITHUB_TOKEN` with Issues write permission. Ralph creates deduplicated issues for medium/high findings and keeps failed deliveries in its SQLite outbox for retry. Set `RALPH_GITHUB_MIN_SEVERITY=high` to reduce issue volume.
