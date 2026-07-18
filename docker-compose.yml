@@ -1,6 +1,8 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      target: bot
     restart: unless-stopped
     env_file: .env
     environment:
@@ -10,7 +12,9 @@ services:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
   ralph:
-    build: .
+    build:
+      context: .
+      target: ralph
     restart: unless-stopped
     env_file: .env
     command: ["python", "-m", "ralph.watch_events"]
