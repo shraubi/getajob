@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from .models import Finding
 
+_AI_ROLE_MARKERS = (
+    "vibe coder", "vibe coding", "ai-assisted developer",
+    "ai-assisted development", "ai powered development",
+)
+
 _SUPPORT_MARKERS = (
     "technical support", "tech support", "support engineer", "support specialist",
     "customer support", "customer service", "customer care", "service desk",
@@ -86,17 +91,19 @@ def analyze_events(events: tuple[OperationalEvent, ...]) -> tuple[Finding, ...]:
             title = str(data.get("title") or "").casefold()
             scores = data.get("scores") if isinstance(data.get("scores"), dict) else {}
             expected = max(scores, key=scores.get) if scores and max(scores.values()) > 0 else None
+            if expected is None and any(marker in title for marker in _AI_ROLE_MARKERS):
+                expected = "ml_engineering"
             if any(marker in title for marker in _SUPPORT_MARKERS):
                 findings.append(_finding(
                     event, "support_role_misclassified", "high",
                     "A support role was rejected as unsupported",
-                    {"actual_direction": "other", "unsupported": True},
+                    {"actual_direction": "other", "unsupported": True, "title": str(data.get("title") or "")},
                 ))
             elif expected:
                 findings.append(_finding(
                     event, "supported_role_rejected", "high",
                     "A role with a supported direction score was rejected",
-                    {"expected_direction": expected},
+                    {"expected_direction": expected, "title": str(data.get("title") or "")},
                 ))
         if event.event_type == "resume_missing" or (
             event.event_type == "job_previewed" and not bool(data.get("resume_preview"))
