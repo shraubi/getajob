@@ -597,6 +597,7 @@ async def _submit_with_playwright(
                     "Could not identify a unique submit control "
                     f"(visible controls={submit_labels})"
                 )
+            initial_url = page.url
             await submit_controls.nth(submit_index).click()
 
             for _ in range(60):
@@ -650,6 +651,13 @@ async def _submit_with_playwright(
                         outcome.status,
                         page.url,
                         outcome.detail,
+                    )
+                form_still_present = await page.locator(
+                    ".ashby-application-form-field-entry, input[type=\"file\"]"
+                ).count() > 0
+                if page.url != initial_url and not form_still_present:
+                    return AshbySubmissionResult(
+                        "submitted", page.url, "Application form completed"
                     )
             return AshbySubmissionResult(
                 "manual_required",

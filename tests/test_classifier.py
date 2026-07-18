@@ -31,6 +31,15 @@ class ClassifyTests(unittest.TestCase):
             "ml_engineering",
         )
 
+    def test_classifies_vibe_coder_as_ml_engineering(self):
+        self.assertEqual(
+            classify(
+                "Vibe Coder",
+                "Build AI-powered products with LLMs and prompt engineering.",
+            ),
+            "ml_engineering",
+        )
+
     def test_classifies_devops_role(self):
         self.assertEqual(
             classify(
