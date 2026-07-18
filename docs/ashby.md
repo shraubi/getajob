@@ -18,11 +18,11 @@ Add standard values and explicit screening answers to the untracked `storage/app
   "last_name": "Lovelace",
   "email": "ada@example.com",
   "phone": "+33123456789",
-  "location": {"country": "France", "city": "Paris"},
+  "location": {"country": "Exampleland", "city": "Paris"},
   "links": {"linkedin": "https://linkedin.com/in/example"},
   "facts": {
-    "work_authorized_countries": ["France"],
-    "previous_employers": [],
+    "work_authorized_countries": ["Exampleland"],
+    "previous_employers": ["Example Corp"],
     "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
   },
   "answers": {
