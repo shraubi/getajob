@@ -82,7 +82,7 @@ def _finding(
 
 
 def _direction(text: str) -> str | None:
-    match = re.search(r"(?im)^direction:\\s*([a-z_]+)\\s*$", text)
+    match = re.search(r"(?im)^direction:\s*([a-z_]+)\s*$", text)
     return match.group(1).casefold() if match else None
 
 

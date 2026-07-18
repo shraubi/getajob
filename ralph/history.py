@@ -12,7 +12,7 @@ import httpx
 
 from .models import ChatMessage
 
-_MARKER_RE = re.compile(r"(?m)^Ralph-Run:\\s*([0-9a-f]{32})\\s*$")
+_MARKER_RE = re.compile(r"(?m)^Ralph-Run:\s*([0-9a-f]{32})\s*$")
 _MARKER_SEARCH_LIMIT = 100
 _MESSAGE_LIMIT = 30
 
