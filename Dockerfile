@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir \
     -r requirements.txt
 
 COPY jobbot ./jobbot
+COPY ralph ./ralph
 COPY scripts ./scripts
 COPY main.py ./
 RUN mkdir -p /app/data/resumes /app/storage
