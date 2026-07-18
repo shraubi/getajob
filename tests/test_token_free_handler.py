@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("YOUR_CHAT_ID", "1")
 
-from jobbot.handlers import _handle_token_free, _target_chat_id
+from jobbot import config
+from jobbot.handlers import _contact_page_from_apply_url, _handle_token_free, _target_chat_id, handle_vacancy_message
 from jobbot.integrations.job_page import JobPageError, ParsedJobPage
 from jobbot.application import ApplicationDraft, UnknownDirectionError, Vacancy
 
@@ -37,6 +38,31 @@ class FakeHirifyClient:
 
 
 class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_routes_mailto_application_target_to_email_contact(self):
+        vacancy = Vacancy("Vibe Coder", "Adaptify", "AI LLM role")
+        page = ParsedJobPage(
+            vacancy, "job_page_with_apply_link", "mailto:jobs@example.com",
+            "https://adaptify.ai/jobs/vibe-coder",
+        )
+        routed = _contact_page_from_apply_url(page)
+        self.assertEqual(routed.contact_kind, "email")
+        self.assertEqual(routed.contact_value, "jobs@example.com")
+        self.assertEqual(routed.apply_url, "")
+
+    async def test_url_only_message_bypasses_description_length_gate(self):
+        url = "https://adaptify.ai/jobs/vibe-coder"
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1), text=url, caption=None, message_id=7
+        )
+        run = AsyncMock()
+        with (
+            patch.object(config, "ALLOWED_CHAT_IDS", {1}),
+            patch("jobbot.handlers.telegram_message_url", return_value=""),
+            patch("jobbot.handlers._handle_token_free", new=run),
+        ):
+            await handle_vacancy_message(SimpleNamespace(message=message), SimpleNamespace())
+        run.assert_awaited_once()
+
     def test_routes_replies_to_the_initiating_allowed_chat(self):
         self.assertEqual(_target_chat_id(SimpleNamespace(_chat_id=5444315156)), 5444315156)
 
