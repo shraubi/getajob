@@ -46,6 +46,12 @@ class JobPageTests(unittest.TestCase):
         self.assertEqual(parsed.source_category, "application_form")
         self.assertEqual(parsed.apply_url, "https://careers.example.com/contact")
 
+    def test_uses_email_contact_when_no_form_or_apply_link_exists(self):
+        html = """<html><head><meta name="description" content="Build AI products with Python and language models for customers around the world."></head>
+        <body><main><h1>Vibe Coder</h1><a href="mailto:jobs@example.com">jobs@example.com</a></main></body></html>"""
+        parsed = parse_job_html(html, "https://adaptify.ai/jobs/vibe-coder")
+        self.assertEqual(parsed.apply_url, "mailto:jobs@example.com")
+
     def test_detects_russian_javascript_apply_button(self):
         html = """<html><head><meta name="description" content="Python backend role with FastAPI and PostgreSQL for a distributed services team."></head>
         <body><main><h1>Python-разработчик</h1><button>Отправить резюме</button></main></body></html>"""

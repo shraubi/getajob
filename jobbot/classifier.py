@@ -35,7 +35,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, int]] = {
 }
 
 _ROLE_MARKERS = {
-    "backend_python": ("python", "fastapi", "django", "flask", "python backend", "python developer"),
+    "backend_python": ("python", "fastapi", "django", "flask", "backend", "бекенд", "бэкенд", "python backend", "python developer"),
     "data_engineering": ("data engineer", "инженер данных", "дата инженер", "databricks", "data pipeline"),
     "ml_engineering": (
         "machine learning", "ml engineer", "ai engineer", "инженер ии",
@@ -49,6 +49,8 @@ _ROLE_MARKERS = {
         "специалист поддержки", "специалист технической поддержки", "инженер поддержки", "help desk",
     ),
 }
+
+_GENERIC_ROLE_MARKERS = {"backend", "бекенд", "бэкенд"}
 
 _UNSUPPORTED_TITLE_STACKS = (
     "typescript", "javascript", "nestjs", "node js", "nodejs",
@@ -89,7 +91,11 @@ def classify(title: str, description: str, weights: Mapping[str, Mapping[str, in
     if any(_normalize(marker) in normalized_title for marker in _UNSUPPORTED_TITLE_STACKS):
         eligible = {
             direction for direction in eligible
-            if any(_normalize(marker) in normalized_title for marker in _ROLE_MARKERS.get(direction, ()))
+            if any(
+                _normalize(marker) in normalized_title
+                for marker in _ROLE_MARKERS.get(direction, ())
+                if _normalize(marker) not in _GENERIC_ROLE_MARKERS
+            )
         }
     eligible_scores = {direction: score for direction, score in scores.items() if direction in eligible}
     if not eligible_scores or max(eligible_scores.values()) == 0:

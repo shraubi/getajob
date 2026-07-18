@@ -142,14 +142,19 @@ def _application_target(soup: BeautifulSoup, base_url: str) -> tuple[str, bool]:
         if _ACTION_RE.search(searchable) or re.search(r"\b(cv|resume|cover.?letter)\b", fields, re.I):
             return urljoin(base_url, form.get("action") or base_url), True
     ranked: list[tuple[int, str]] = []
+    contact_target = ""
     for anchor in soup.find_all("a", href=True):
         href = urljoin(base_url, anchor["href"])
+        if href.casefold().startswith("mailto:") and not contact_target:
+            contact_target = href
         label = " ".join((anchor.get_text(" ", strip=True), anchor.get("aria-label", ""), anchor.get("title", ""), anchor["href"]))
         if _ACTION_RE.search(label):
             score = 2 if _ACTION_RE.search(anchor.get_text(" ", strip=True)) else 1
             ranked.append((score, href))
     if ranked:
         return max(ranked)[1], False
+    if contact_target:
+        return contact_target, False
     # Modern job boards commonly render the actual form in a JS modal. Keeping
     # the page URL as the action lets the application layer report an auth or
     # CAPTCHA requirement instead of pretending that no apply action exists.

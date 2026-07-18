@@ -2,6 +2,7 @@ import logging
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote, urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -51,6 +52,33 @@ def _get_hirify_client() -> HirifyClient:
     if _hirify_client is None:
         _hirify_client = HirifyClient(config.HIRIFY_EMAIL, config.HIRIFY_PASSWORD)
     return _hirify_client
+
+
+def _contact_page_from_apply_url(page):
+    if not page or not page.apply_url:
+        return page
+    parsed = urlparse(page.apply_url)
+    if parsed.scheme.casefold() == "mailto":
+        address = unquote(parsed.path).strip()
+        if address:
+            return replace(
+                page,
+                source_category="email_contact",
+                apply_url="",
+                contact_kind="email",
+                contact_value=address,
+            )
+    if (parsed.hostname or "").casefold() in {"t.me", "www.t.me"}:
+        username = parsed.path.strip("/")
+        if username:
+            return replace(
+                page,
+                source_category="telegram_contact",
+                apply_url=page.apply_url,
+                contact_kind="telegram",
+                contact_value=username,
+            )
+    return page
 
 
 def _target_chat_id(ctx) -> int:
@@ -119,6 +147,7 @@ async def _handle_token_free(
                 source_vacancy = parsed_page.vacancy
                 ats_page = await fetch_ats_page(parsed_page.apply_url)
                 parsed_page = replace(ats_page, vacancy=source_vacancy)
+            parsed_page = _contact_page_from_apply_url(parsed_page)
         except (JobPageError, HirifyError, AtsError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
@@ -253,7 +282,11 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     if not text:
         return
     jd = text[:3000].strip()
-    if len(jd) < _MIN_JD_LENGTH:
+    try:
+        has_public_url = bool(extract_first_url(jd))
+    except JobPageError:
+        has_public_url = False
+    if len(jd) < _MIN_JD_LENGTH and not has_public_url:
         await _notify(ctx, f"Too short to be a job description ({len(jd)} chars). Paste the full JD.")
         return
     await _handle_token_free(
