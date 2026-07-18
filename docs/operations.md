@@ -47,4 +47,8 @@ Every account using Jobbot must be listed in `YOUR_CHAT_ID` or `ADDITIONAL_CHAT_
 
 ### GitHub issue publishing
 
-Set `RALPH_GITHUB_REPOSITORY` and a fine-grained `RALPH_GITHUB_TOKEN` with Issues write permission. Ralph creates deduplicated issues for medium/high findings and keeps failed deliveries in its SQLite outbox for retry. Set `RALPH_GITHUB_MIN_SEVERITY=high` to reduce issue volume.
+Set `GITHUB_REPOSITORY` and a fine-grained `GITHUB_TOKEN` with Issues write permission. Ralph creates deduplicated issues for medium/high findings and keeps failed deliveries in its SQLite outbox for retry.
+
+### Browser storage
+
+The bot image contains browser system libraries only. The deploy downloads Chromium Headless Shell once into `storage/playwright/`, outside Docker's compressed image layers. This avoids BuildKit temporarily storing multiple copies of the browser during image export.
