@@ -57,11 +57,43 @@ class RalphGitHubIssueTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertNotIn("secret", calls[0][1]["json"]["body"])
             self.assertIn("Vibe Coder", calls[0][1]["json"]["title"])
+            body = calls[0][1]["json"]["body"]
+            self.assertIn("## What is wrong", body)
+            self.assertIn("rejected Vibe Coder as unsupported", body)
+            self.assertIn("## Expected behavior", body)
+            self.assertIn("## Where to investigate", body)
             again, _ = outbox.publish_pending(
                 repository="shraubi/getajob", token="secret", post=post
             )
             self.assertEqual(again, ())
             self.assertEqual(len(calls), 1)
+
+    def test_application_blocker_explains_the_specific_failure(self):
+        finding = Finding(
+            rule_id="application_blocked", severity="high",
+            summary="The application path ended in a known blocker",
+            interaction_id="1:8", message_ids=(8,), timestamps=("now",),
+            evidence={
+                "blocker_types": ["required_fields"],
+                "event_type": "application_failed",
+                "urls": ["https://jobs.example/8"],
+            },
+        )
+        report = self.report()
+        report = ReviewReport(**{**report.__dict__, "findings": (finding,)})
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = GitHubIssueOutbox(Path(directory) / "ralph.db")
+            outbox.enqueue_report(report)
+            calls = []
+
+            def post(url, **kwargs):
+                calls.append(kwargs["json"])
+                return FakeResponse()
+
+            outbox.publish_pending(repository="shraubi/getajob", token="secret", post=post)
+            self.assertEqual(calls[0]["title"], "[Ralph] Application blocked: required fields")
+            self.assertIn("missing from `applicant.json`", calls[0]["body"])
+            self.assertNotIn("seen the similar bug", calls[0]["body"].casefold())
 
 
 if __name__ == "__main__":

@@ -49,6 +49,19 @@ class RalphEventReviewTests(unittest.TestCase):
             self.assertEqual(findings[0].rule_id, "unclassified_role_rejected")
             self.assertEqual(findings[0].evidence["title"], "Novel Role Name")
 
+    def test_blocker_evidence_preserves_the_failed_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_review_event(
+                db, "1:8", "job_fetch_failed",
+                source_url="https://jobs.example/blocked",
+                blocker_type="UnsafeUrlError",
+            )
+            events, _ = read_event_batch(db, after_id=0)
+            finding = analyze_events(events)[0]
+            self.assertEqual(finding.evidence["event_type"], "job_fetch_failed")
+            self.assertEqual(finding.evidence["blocker_types"], ["UnsafeUrlError"])
+
     def test_ignores_expired_pages_and_stores_no_transcript_field(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"

@@ -120,19 +120,32 @@ def analyze_events(events: tuple[OperationalEvent, ...]) -> tuple[Finding, ...]:
             findings.append(_finding(
                 event, "resume_preview_missing", "medium",
                 "A supported interaction did not produce a résumé document",
-                {"direction": data.get("direction") or "unknown"},
+                {
+                    "direction": data.get("direction") or "unknown",
+                    "title": str(data.get("title") or ""),
+                    "event_type": event.event_type,
+                },
             ))
         if event.event_type == "job_previewed" and not bool(data.get("application_path")):
             findings.append(_finding(
                 event, "application_path_missing", "medium",
                 "The bot produced a résumé preview without an application or contact action",
-                {"has_preview": True, "has_application_path": False},
+                {
+                    "has_preview": True,
+                    "has_application_path": False,
+                    "title": str(data.get("title") or ""),
+                    "event_type": event.event_type,
+                },
             ))
         if event.event_type in {"job_fetch_failed", "application_failed"}:
             findings.append(_finding(
                 event, "application_blocked", "high",
                 "The application path ended in a known blocker",
-                {"blocker_types": [str(data.get("blocker_type") or event.event_type)]},
+                {
+                    "blocker_types": [str(data.get("blocker_type") or event.event_type)],
+                    "event_type": event.event_type,
+                    "title": str(data.get("title") or ""),
+                },
             ))
         if event.event_type == "telegram_throttled":
             reason = str(data.get("reason") or "telegram_limit")
