@@ -35,7 +35,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, int]] = {
 }
 
 _ROLE_MARKERS = {
-    "backend_python": ("python", "fastapi", "django", "flask", "python backend", "python developer"),
+    "backend_python": ("python", "fastapi", "django", "flask", "backend", "бекенд", "бэкенд", "python backend", "python developer"),
     "data_engineering": ("data engineer", "инженер данных", "дата инженер", "databricks", "data pipeline"),
     "ml_engineering": (
         "machine learning", "ml engineer", "ai engineer", "инженер ии",
