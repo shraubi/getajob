@@ -9,13 +9,13 @@ from telegram.ext import ContextTypes
 from jobbot import config
 from jobbot.classifier import score_directions
 from jobbot.review_events import record_review_event
-from jobbot.integrations.ashby import (
-    AshbyError,
-    fetch_ashby_posting,
+from jobbot.integrations.ats import (
+    AtsError,
+    fetch_ats_page,
     format_missing_questions,
-    is_ashby_job_url,
-    preflight_ashby_application,
-    submit_ashby_application,
+    is_ats_job_url,
+    preflight_ats_application,
+    submit_ats_application,
 )
 from jobbot.integrations.hirify import HirifyError, HirifyClient, is_hirify_job_url
 from jobbot.integrations.job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
@@ -74,18 +74,16 @@ async def _handle_token_free(
         source_url = message_url or extract_first_url(text)
     except JobPageError:
         source_url = ""
-    ashby_preflight = None
+    ats_preflight = None
     if source_url:
         await _notify(ctx, "Fetching and parsing the linked job page...")
         try:
-            if is_ashby_job_url(source_url):
-                ashby_posting = await fetch_ashby_posting(source_url)
-                parsed_page = ashby_posting.page
+            if is_ats_job_url(source_url):
+                parsed_page = await fetch_ats_page(source_url)
             else:
                 parsed_page = await fetch_job_from_message(source_url)
-                if is_ashby_job_url(parsed_page.fetched_url):
-                    ashby_posting = await fetch_ashby_posting(parsed_page.fetched_url)
-                    parsed_page = ashby_posting.page
+                if is_ats_job_url(parsed_page.fetched_url):
+                    parsed_page = await fetch_ats_page(parsed_page.fetched_url)
             if is_hirify_job_url(parsed_page.fetched_url):
                 contact = await _get_hirify_client().get_contact(parsed_page.fetched_url)
                 if contact:
@@ -95,14 +93,17 @@ async def _handle_token_free(
                     apply_url = contact.target_url
                     if contact.kind == "url":
                         apply_url = await resolve_application_url(apply_url)
-                    parsed_page = replace(
-                        parsed_page,
-                        vacancy=vacancy,
-                        source_category="telegram_contact" if contact.kind == "telegram" else "external_application_url",
-                        apply_url=apply_url,
-                        contact_kind=contact.kind,
-                        contact_value=contact.value,
-                    )
+                    if is_ats_job_url(apply_url):
+                        parsed_page = await fetch_ats_page(apply_url)
+                    else:
+                        parsed_page = replace(
+                            parsed_page,
+                            vacancy=vacancy,
+                            source_category="telegram_contact" if contact.kind == "telegram" else "external_application_url",
+                            apply_url=apply_url,
+                            contact_kind=contact.kind,
+                            contact_value=contact.value,
+                        )
                 else:
                     direct = await _get_hirify_client().get_direct_application(parsed_page.fetched_url)
                     if direct:
@@ -113,7 +114,9 @@ async def _handle_token_free(
                             contact_kind="hirify_direct",
                             contact_value=str(direct.vacancy_id),
                         )
-        except (JobPageError, HirifyError, AshbyError) as exc:
+            if parsed_page.apply_url and is_ats_job_url(parsed_page.apply_url):
+                parsed_page = await fetch_ats_page(parsed_page.apply_url)
+        except (JobPageError, HirifyError, AtsError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
             _review_event(
@@ -148,15 +151,15 @@ async def _handle_token_free(
 
     if parsed_page and parsed_page.contact_kind == "telegram":
         draft = replace(draft, message=render_telegram_message(parsed_page.fetched_url))
-    if parsed_page and parsed_page.contact_kind == "ashby":
+    if parsed_page and parsed_page.contact_kind == "ats":
         try:
-            ashby_preflight = await preflight_ashby_application(
+            ats_preflight = await preflight_ats_application(
                 parsed_page.fetched_url,
                 draft.resume_path,
                 config.APPLICATION_PROFILE_PATH,
             )
-        except AshbyError as exc:
-            await _notify(ctx, f"Could not prepare the Ashby application: {exc}")
+        except AtsError as exc:
+            await _notify(ctx, f"Could not prepare the ATS application: {exc}")
             _review_event(
                 interaction_id, "application_failed", source_url=source_url,
                 blocker_type=type(exc).__name__,
@@ -187,10 +190,10 @@ async def _handle_token_free(
             filename=draft.resume_path.name,
             caption=f"Selected resume: {draft.direction}",
         )
-    if ashby_preflight and ashby_preflight.missing:
+    if ats_preflight and ats_preflight.missing:
         await _notify(
             ctx,
-            format_missing_questions(ashby_preflight)
+            format_missing_questions(ats_preflight)
             + "\nAdd these answers to applicant.json under \"answers\", then send the vacancy again.",
         )
         _review_event(
@@ -201,9 +204,10 @@ async def _handle_token_free(
         return
 
     confirmation = None
-    if parsed_page and parsed_page.contact_kind == "ashby":
+    if parsed_page and parsed_page.contact_kind == "ats":
+        provider = parsed_page.contact_value.title()
         confirmation = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Apply through Ashby", callback_data=f"ashbyapply:{job_id[:24]}"),
+            InlineKeyboardButton(f"Apply through {provider}", callback_data=f"atsapply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
     elif parsed_page and parsed_page.contact_kind == "telegram":
@@ -259,18 +263,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("applyskip:"):
         await query.edit_message_text("Application skipped.")
         return
-    if data.startswith("ashbyapply:"):
+    if data.startswith(("atsapply:", "ashbyapply:")):
         prefix = data.split(":", 1)[1]
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
-        if not job or job["contact_kind"] != "ashby":
-            await query.edit_message_text("Saved Ashby application was not found.")
+        if not job or job["contact_kind"] not in {"ats", "ashby"}:
+            await query.edit_message_text("Saved ATS application was not found.")
             _review_event(interaction_id, "application_failed", blocker_type="missing_saved_job")
             return
         if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
             await query.edit_message_text("This application is already sending or sent.")
             return
+        provider = job["contact_value"] if job["contact_kind"] == "ats" else "ashby"
         try:
-            result = await submit_ashby_application(
+            result = await submit_ats_application(
                 job["page_url"],
                 config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH,
@@ -279,39 +284,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             if result.status == "submitted":
                 mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)
-                record_send_attempt(
-                    config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], "sent"
-                )
+                record_send_attempt(config.JOBS_DB_PATH, job["id"], provider, job["page_url"], "sent")
                 await query.edit_message_text(
-                    f"Application submitted through Ashby with {job['resume_name']}.\n{result.url}"
+                    f"Application submitted through {provider.title()} with {job['resume_name']}.\n{result.url}"
                 )
-                _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="ashby")
+                _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel=provider)
                 return
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
-            record_send_attempt(
-                config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], result.status
-            )
+            record_send_attempt(config.JOBS_DB_PATH, job["id"], provider, job["page_url"], result.status)
             await query.edit_message_text(
-                f"Ashby needs your help: {result.detail}\nFinish here: {result.url}"
+                f"{provider.title()} needs your help: {result.detail}\nFinish here: {result.url}"
             )
-            _review_event(
-                interaction_id, "application_failed", source_url=job["page_url"],
-                blocker_type=result.status,
-            )
+            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=result.status)
             return
         except Exception as exc:
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
-            record_send_attempt(
-                config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], "failed", exc
-            )
-            logger.exception("Ashby application failed for job %s", job["id"])
-            await query.edit_message_text(
-                f"Ashby application failed: {exc}\nFinish manually: {job['apply_url']}"
-            )
-            _review_event(
-                interaction_id, "application_failed", source_url=job["page_url"],
-                blocker_type=type(exc).__name__,
-            )
+            record_send_attempt(config.JOBS_DB_PATH, job["id"], provider, job["page_url"], "failed", exc)
+            logger.exception("ATS application failed for job %s", job["id"])
+            await query.edit_message_text(f"ATS application failed: {exc}\nFinish manually: {job['apply_url']}")
+            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=type(exc).__name__)
             return
     if data.startswith("webapply:"):
         prefix = data.split(":", 1)[1]
