@@ -40,6 +40,15 @@ class ClassifyTests(unittest.TestCase):
             "ml_engineering",
         )
 
+    def test_accepts_backend_evidence_for_generic_engineering_title(self):
+        self.assertEqual(
+            classify(
+                "Sr Software Engineer, Front End",
+                "Collaborate on backend services and product integrations.",
+            ),
+            "backend_python",
+        )
+
     def test_classifies_devops_role(self):
         self.assertEqual(
             classify(
