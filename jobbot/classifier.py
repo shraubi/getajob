@@ -17,6 +17,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, int]] = {
         "machine learning": 7, "ml engineer": 7, "ai engineer": 7,
         "инженер ии": 7, "разработчик ии": 7, "ии агент": 6,
         "искусственный интеллект": 6, "llm": 5, "ai agents": 5,
+        "vibe coder": 8, "ai developer": 7, "generative ai": 6, "prompt engineering": 5,
         "pytorch": 4, "tensorflow": 4, "mlops": 3,
     },
     "devops": {
@@ -39,6 +40,7 @@ _ROLE_MARKERS = {
     "ml_engineering": (
         "machine learning", "ml engineer", "ai engineer", "инженер ии",
         "разработчик ии", "ии агент", "искусственный интеллект", "llm", "ai agents",
+        "vibe coder", "ai developer", "generative ai", "prompt engineering",
     ),
     "devops": ("devops", "sre", "platform engineer", "инженер инфраструктуры"),
     "tech_support": (
