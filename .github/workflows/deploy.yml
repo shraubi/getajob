@@ -25,11 +25,22 @@ jobs:
           script: |
             set -eu
             cd ${{ secrets.APP_DIR }}
+
+            cleanup() {
+              docker image prune -af || true
+              docker builder prune -af || true
+              docker system df || true
+            }
+            trap cleanup EXIT
+
             git fetch origin main
             git reset --hard origin/main
-            docker image prune -af
-            docker builder prune -af --keep-storage 1GB
+
+            # Release the previous deployment's images before rebuilding.
+            # Bind-mounted application data is preserved by omitting --volumes.
+            docker compose down --remove-orphans
+            cleanup
+
             docker compose build --pull bot ralph
             docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
             docker compose up -d bot ralph
-            docker image prune -af
