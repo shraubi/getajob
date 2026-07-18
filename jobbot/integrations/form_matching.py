@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Sequence
 
@@ -82,3 +83,71 @@ def best_field_label_match(
     ):
         return None
     return ranked[0][1]
+
+
+_SUBMIT_ACTION_WORDS = frozenset({"submit", "send", "apply"})
+
+
+@dataclass(frozen=True)
+class FormSubmissionOutcome:
+    """Provider-neutral result derived from browser-visible submission evidence."""
+
+    status: str
+    detail: str
+
+
+def submit_action_score(label: object) -> float:
+    """Score a control label by whether it expresses form submission intent."""
+    normalized = normalize_field_label(label)
+    words = tuple(normalized.split())
+    if not words:
+        return 0.0
+    if normalized == "submit":
+        return 1.0
+    if "submit" in words:
+        return 0.98
+    if normalized in {"apply", "send"}:
+        return 0.96
+    if set(words) & _SUBMIT_ACTION_WORDS and set(words) & {
+        "application", "form", "response", "answers"
+    }:
+        return 0.94
+    return 0.0
+
+
+def best_submit_control_match(candidates: Sequence[object]) -> int | None:
+    """Return a unique submit-intent control, rejecting absent or tied matches."""
+    ranked = sorted(
+        (
+            (submit_action_score(candidate), index)
+            for index, candidate in enumerate(candidates)
+        ),
+        reverse=True,
+    )
+    if not ranked or ranked[0][0] <= 0:
+        return None
+    if len(ranked) > 1 and ranked[1][0] == ranked[0][0]:
+        return None
+    return ranked[0][1]
+
+
+def classify_form_submission(
+    *,
+    success_present: bool = False,
+    success_text: object = "",
+    failure_present: bool = False,
+    failure_text: object = "",
+    challenge_present: bool = False,
+    challenge_text: object = "",
+) -> FormSubmissionOutcome | None:
+    """Classify explicit structural evidence without provider-specific wording."""
+    if success_present:
+        detail = str(success_text).strip() or "Submission confirmed"
+        return FormSubmissionOutcome("submitted", detail)
+    if failure_present:
+        detail = str(failure_text).strip() or "The form reported a submission failure"
+        return FormSubmissionOutcome("failed", detail)
+    if challenge_present:
+        detail = str(challenge_text).strip() or "Interactive verification is required"
+        return FormSubmissionOutcome("manual_required", detail)
+    return None
