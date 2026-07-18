@@ -40,6 +40,11 @@ sys.modules.setdefault("storage.state", storage_state_module)
 
 from jobbot import config
 from jobbot.handlers import _handle_token_free, handle_callback
+from jobbot.integrations.ashby import (
+    AshbyPosting,
+    AshbyPreflight,
+    AshbySubmissionResult,
+)
 from jobbot.integrations.hirify import Contact, DirectApplication
 from jobbot.integrations.job_page import ParsedJobPage
 from jobbot.application import ApplicationDraft, Vacancy
@@ -175,6 +180,61 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
                 await handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
             submit.assert_awaited_once_with(url, resume, profile_path, "")
             self.assertIn("Application submitted", query.edited)
+
+    async def test_ashby_duplicate_callback_submits_once(self):
+        url = "https://jobs.ashbyhq.com/clipboard/d77b2224-307f-48b1-a0ea-ab67153993c0"
+        vacancy = Vacancy(
+            title="Technical Support Engineer",
+            company="Clipboard",
+            description="Python support engineering troubleshooting role " * 5,
+            url=url,
+        )
+        page = ParsedJobPage(
+            vacancy, "ashby_application_form", url + "/application", url,
+            contact_kind="ashby", contact_value="d77b2224-307f-48b1-a0ea-ab67153993c0",
+        )
+        posting = AshbyPosting(page, "clipboard", page.contact_value, ())
+        preflight = AshbyPreflight(posting, {}, ())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "backend.pdf"
+            resume.write_bytes(b"pdf")
+            profile_path = root / "applicant.json"
+            profile_path.write_text("{}", encoding="utf-8")
+            db_path = root / "jobs.db"
+            bot = FakeBot()
+            draft = ApplicationDraft(vacancy, "backend_python", resume, "")
+            with (
+                patch("jobbot.handlers.fetch_ashby_posting", new=AsyncMock(return_value=posting)),
+                patch("jobbot.handlers.preflight_ashby_application", new=AsyncMock(return_value=preflight)),
+                patch("jobbot.handlers.build_application_for_vacancy", return_value=draft),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+                patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
+            ):
+                await _handle_token_free(SimpleNamespace(bot=bot), url)
+
+            button_data = bot.messages[-1]["reply_markup"].inline_keyboard[0][0].callback_data
+            self.assertTrue(button_data.startswith("ashbyapply:"))
+            submit = AsyncMock(return_value=AshbySubmissionResult(
+                "submitted", url + "/application/success", "confirmed"
+            ))
+            with (
+                patch("jobbot.handlers.submit_ashby_application", new=submit),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+                patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
+                patch.object(config, "ASHBY_BROWSER_PROFILE_PATH", root / "browser"),
+                patch.object(config, "ASHBY_BROWSER_HEADLESS", True),
+            ):
+                first = FakeQuery(button_data)
+                await handle_callback(SimpleNamespace(callback_query=first), SimpleNamespace())
+                duplicate = FakeQuery(button_data)
+                await handle_callback(SimpleNamespace(callback_query=duplicate), SimpleNamespace())
+
+            submit.assert_awaited_once()
+            self.assertIn("Application submitted", first.edited)
+            self.assertIn("already sending or sent", duplicate.edited)
 
     async def test_telegram_contact_preview_and_one_button_send_dry_run(self):
         url = "https://hirify.me/jobs/732017-application-backend-engineer-python"
