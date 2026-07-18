@@ -16,7 +16,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy bot to VM
+      - name: Deploy bot and Ralph to VM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
@@ -27,6 +27,8 @@ jobs:
             cd ${{ secrets.APP_DIR }}
             git fetch origin main
             git reset --hard origin/main
-            docker compose build --pull bot
-            docker compose up -d bot
-            docker image prune -f
+            docker image prune -af
+            docker builder prune -af --keep-storage 1GB
+            docker compose build --pull bot ralph
+            docker compose up -d bot ralph
+            docker image prune -af
