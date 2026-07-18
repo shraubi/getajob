@@ -1,4 +1,4 @@
--r requirements.txt
+-r requirements-base.txt
 anthropic>=0.25.0
 fpdf2>=2.7.0
 litellm>=1.40.0

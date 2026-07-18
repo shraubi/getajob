@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from token_free import Vacancy
+from jobbot.application import Vacancy
 
 _URL_RE = re.compile(r"https?://[^\s<>\]]+")
 _ACTION_RE = re.compile(

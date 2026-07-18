@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -11,8 +12,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from job_page import validate_public_url
-from token_free import extract_resume_text
+from jobbot.integrations.job_page import validate_public_url
+from jobbot.application import extract_resume_text
 
 _MAX_PAGE_BYTES = 2_000_000
 _SUCCESS_RE = re.compile(
@@ -74,6 +75,11 @@ def _profile_value(tag, profile: ApplicantProfile) -> str:
     if any(marker in key for marker in ("phone", "tel", "mobile")) or tag.get("type") == "tel":
         return profile.phone
     return ""
+
+
+def _searchable_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
 def build_form_payload(html: str, page_url: str, profile: ApplicantProfile, message: str = ""):
@@ -190,7 +196,8 @@ async def submit_application(
                 response.raise_for_status()
                 result_html = await _read_response(response)
         result_soup = BeautifulSoup(result_html, "html.parser")
-        confirmed = bool(_SUCCESS_RE.search(result_soup.get_text(" ", strip=True)))
+        result_text = _searchable_text(result_soup.get_text(" ", strip=True))
+        confirmed = bool(_SUCCESS_RE.search(result_text))
         redirected_to_confirmation = str(response.url) != action and not result_soup.find("input", attrs={"type": "file"})
         if not confirmed and not redirected_to_confirmation:
             raise WebApplicationError("The application form was returned without a success confirmation")

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from web_application import ApplicantProfile, WebApplicationError, build_form_payload, submit_application
+from jobbot.integrations.web_application import ApplicantProfile, WebApplicationError, build_form_payload, submit_application
 
 FORM_HTML = """
 <html><body><form method="post">
@@ -75,7 +75,7 @@ class WebApplicationTests(unittest.TestCase):
             self.assertIn(b'name="cv"', request.content)
             self.assertIn(b'name="prenom"', request.content)
             self.assertIn(b"Ekaterina", request.content)
-            return httpx.Response(200, text="<h1>Thank you, application submitted</h1>", request=request)
+            return httpx.Response(200, text="<h1>Votre candidature a été envoyée</h1>", request=request)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -87,8 +87,8 @@ class WebApplicationTests(unittest.TestCase):
                 "email": "me@example.com", "phone": "+995555123",
                 "answers": {"q1": "0", "q2": "0", "q3": "1"},
             }), encoding="utf-8")
-            with patch("web_application.validate_public_url", new=AsyncMock()), \
-                 patch("web_application.extract_resume_text", return_value=""):
+            with patch("jobbot.integrations.web_application.validate_public_url", new=AsyncMock()), \
+                 patch("jobbot.integrations.web_application.extract_resume_text", return_value=""):
                 result = asyncio.run(submit_application(
                     "https://jobs.example/42", resume, profile,
                     transport=httpx.MockTransport(handler),

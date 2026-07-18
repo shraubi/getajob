@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jobs_store import get_job, save_job
-from token_free import format_vacancy_summary, parse_vacancy, render_message, render_telegram_message
+from jobbot.store import get_job, save_job
+from jobbot.application import format_vacancy_summary, parse_vacancy, render_message, render_telegram_message
 
 LEAD = """Databricks Data Engineer in NDA
 

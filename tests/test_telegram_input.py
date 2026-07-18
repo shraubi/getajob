@@ -5,7 +5,7 @@ from types import SimpleNamespace
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("YOUR_CHAT_ID", "1")
 
-from telegram_input import telegram_message_url
+from jobbot.integrations.telegram_input import telegram_message_url
 
 
 class HandlerUrlTests(unittest.TestCase):

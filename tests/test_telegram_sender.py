@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError, telegram_username
+from jobbot.integrations.telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError, telegram_username
 
 
 class FakeSent:
@@ -77,4 +77,3 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from token_free import (
+from jobbot.application import (
     ResumeNotFoundError,
     UnknownDirectionError,
     build_application,
@@ -60,15 +60,15 @@ class TokenFreeFlowTests(unittest.TestCase):
         self.assertEqual(vacancy.company, "Acme")
         self.assertEqual(vacancy.url, "https://jobs.example/42")
 
-    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    @patch("jobbot.application.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
     def test_classifies_resume_from_pdf_text(self, _extract):
         self.assertEqual(classify_resume(Path("generic.pdf")), "backend_python")
 
-    @patch("token_free.extract_resume_text", side_effect=ValueError("scanned"))
+    @patch("jobbot.application.extract_resume_text", side_effect=ValueError("scanned"))
     def test_classifies_scanned_resume_from_filename(self, _extract):
         self.assertEqual(classify_resume(Path("python_backend.pdf")), "backend_python")
 
-    @patch("token_free.extract_resume_text", return_value="")
+    @patch("jobbot.application.extract_resume_text", return_value="")
     def test_splits_camel_case_filename_and_logs_scores(self, _extract):
         with self.assertLogs("token_free", level="INFO") as logs:
             direction = classify_resume(Path("Ekaterina_Tuganova_DataEngineer_v2.pdf"))
@@ -77,7 +77,7 @@ class TokenFreeFlowTests(unittest.TestCase):
         self.assertIn("scores=", logs.output[0])
 
     @patch(
-        "token_free.extract_resume_text",
+        "jobbot.application.extract_resume_text",
         return_value="Ekaterina Tuganova\nTechnical Support Engineer\nLinux troubleshooting and ticketing",
     )
     def test_uses_second_pdf_line_as_resume_role(self, _extract):
@@ -87,7 +87,7 @@ class TokenFreeFlowTests(unittest.TestCase):
         self.assertIn("role_hint='Technical Support Engineer'", logs.output[0])
         self.assertIn("source=pdf_text", logs.output[0])
 
-    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    @patch("jobbot.application.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
     def test_discovers_and_selects_resume(self, _extract):
         with tempfile.TemporaryDirectory() as directory:
             resume = Path(directory) / "resume.pdf"
@@ -107,7 +107,7 @@ class TokenFreeFlowTests(unittest.TestCase):
                     "Account Executive\nAcme\nOwn enterprise accounts.", Path(directory)
                 )
 
-    @patch("token_free.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
+    @patch("jobbot.application.extract_resume_text", return_value="Python FastAPI Django PostgreSQL")
     def test_builds_end_to_end_draft(self, _extract):
         with tempfile.TemporaryDirectory() as directory:
             resume = Path(directory) / "resume.pdf"

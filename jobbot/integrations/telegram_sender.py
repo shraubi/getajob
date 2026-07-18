@@ -57,4 +57,3 @@ class TelegramSender:
                     ) from exc
                 raise
         return int(sent.id)
-

@@ -1,0 +1,1 @@
+"""Deterministic job-application bot."""

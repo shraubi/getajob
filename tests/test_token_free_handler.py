@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("YOUR_CHAT_ID", "1")
 
-from bot.handlers import _handle_token_free, _target_chat_id
-from job_page import JobPageError, ParsedJobPage
-from token_free import ApplicationDraft, UnknownDirectionError, Vacancy
+from jobbot.handlers import _handle_token_free, _target_chat_id
+from jobbot.integrations.job_page import JobPageError, ParsedJobPage
+from jobbot.application import ApplicationDraft, UnknownDirectionError, Vacancy
 
 
 class FakeBot:
@@ -47,9 +47,9 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
         page = ParsedJobPage(vacancy, "structured_job_page", "", vacancy.url)
         ctx = SimpleNamespace(bot=FakeBot())
-        with patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
-             patch("bot.handlers.is_hirify_job_url", return_value=False), \
-             patch("bot.handlers.build_application_for_vacancy", side_effect=UnknownDirectionError):
+        with patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
+             patch("jobbot.handlers.is_hirify_job_url", return_value=False), \
+             patch("jobbot.handlers.build_application_for_vacancy", side_effect=UnknownDirectionError):
             await _handle_token_free(ctx, vacancy.url)
         self.assertEqual(ctx.bot.documents, [])
         self.assertIn("does not match any of the available resumes", ctx.bot.messages[-1]["text"])
@@ -62,8 +62,8 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
             vacancy = Vacancy("Python Engineer", "Acme", "Python APIs")
             draft = ApplicationDraft(vacancy, "backend_python", resume, "Hello")
             ctx = SimpleNamespace(bot=FakeBot())
-            with patch("bot.handlers.extract_first_url", side_effect=JobPageError("no URL")), \
-                 patch("bot.handlers.build_application", return_value=draft):
+            with patch("jobbot.handlers.extract_first_url", side_effect=JobPageError("no URL")), \
+                 patch("jobbot.handlers.build_application", return_value=draft):
                 await _handle_token_free(ctx, "Python Engineer at Acme with Python APIs and PostgreSQL")
             self.assertTrue(any("Role: Python Engineer" in item["text"] for item in ctx.bot.messages))
 
@@ -74,16 +74,16 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
             vacancy = Vacancy("Python Engineer", "Unknown company", "Python APIs", "https://hirify.me/jobs/1-role")
             page = ParsedJobPage(vacancy, "job_page", "", vacancy.url)
             ctx = SimpleNamespace(bot=FakeBot())
-            with patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
-                 patch("bot.handlers.is_hirify_job_url", return_value=True), \
-                 patch("bot.handlers._get_hirify_client", return_value=FakeHirifyClient()), \
+            with patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)), \
+                 patch("jobbot.handlers.is_hirify_job_url", return_value=True), \
+                 patch("jobbot.handlers._get_hirify_client", return_value=FakeHirifyClient()), \
                  patch(
-                     "bot.handlers.build_application_for_vacancy",
+                     "jobbot.handlers.build_application_for_vacancy",
                      side_effect=lambda enriched, _resume_dir: ApplicationDraft(
                          enriched, "backend_python", resume, "old generic text"
                      ),
                  ), \
-                 patch("bot.handlers.save_fetched_job", return_value="a" * 64):
+                 patch("jobbot.handlers.save_fetched_job", return_value="a" * 64):
                 await _handle_token_free(ctx, vacancy.url)
             summary = next(item for item in ctx.bot.messages if "Contact: @brandiumsu" in item["text"])
             self.assertNotIn("Source:", summary["text"])

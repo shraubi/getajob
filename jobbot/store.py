@@ -6,8 +6,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from job_page import ParsedJobPage
-from token_free import Vacancy
+from jobbot.integrations.job_page import ParsedJobPage
+from jobbot.application import Vacancy
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -295,4 +295,3 @@ def mark_job_send_failed(db_path: Path, job_id: str) -> None:
         connection.commit()
     finally:
         connection.close()
-

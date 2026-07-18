@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-import config
-from hirify_client import HirifyError, HirifyClient, is_hirify_job_url
-from job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
-from jobs_store import (
+from jobbot import config
+from jobbot.integrations.hirify import HirifyError, HirifyClient, is_hirify_job_url
+from jobbot.integrations.job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
+from jobbot.store import (
     claim_job_for_send,
     claim_telegram_job_for_send,
     get_job_by_prefix,
@@ -18,17 +18,16 @@ from jobs_store import (
     save_fetched_job,
     set_sender_cooldown,
 )
-from storage.state import delete_pending, get_pending, save_pending
-from token_free import (
+from jobbot.application import (
     ResumeNotFoundError,
     UnknownDirectionError,
     build_application,
     build_application_for_vacancy,
     render_telegram_message,
 )
-from telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError
-from telegram_input import telegram_message_url
-from web_application import WebApplicationError, submit_application
+from jobbot.integrations.telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError
+from jobbot.integrations.telegram_input import telegram_message_url
+from jobbot.integrations.web_application import WebApplicationError, submit_application
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -159,52 +158,7 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     if len(jd) < _MIN_JD_LENGTH:
         await _notify(ctx, f"Too short to be a job description ({len(jd)} chars). Paste the full JD.")
         return
-    if config.TOKEN_FREE_MODE:
-        await _handle_token_free(ctx, jd, telegram_message_url(msg))
-        return
-
-    from cv.renderer import render_cv_pdf
-    from pipeline import run as pipeline_run
-
-    async def on_progress(status: str) -> None:
-        await _notify(ctx, status)
-
-    try:
-        result = await pipeline_run(jd, on_progress=on_progress)
-    except Exception as exc:
-        logger.exception("Pipeline error")
-        await _notify(ctx, f"Error: {exc}")
-        return
-    if result.action == "skip":
-        await _notify(ctx, f"Skip {result.company} - {result.role_title} ({result.score}/10)\n{result.reason}")
-        return
-    await _notify(ctx, f"{result.company} - {result.role_title} ({result.score}/10)\n{result.reason}")
-    try:
-        pdf_bytes = render_cv_pdf(result.cv_text, result.role_title)
-    except Exception as exc:
-        await _notify(ctx, f"PDF render error: {exc}")
-        return
-    pdf_msg = await ctx.bot.send_document(
-        chat_id=_target_chat_id(ctx),
-        document=pdf_bytes,
-        filename=f"CV_{result.company.replace(' ', '_')}.pdf",
-        caption=f"CV for {result.company}",
-    )
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Send", callback_data=f"send:{pdf_msg.message_id}"),
-        InlineKeyboardButton("Edit", callback_data=f"edit:{pdf_msg.message_id}"),
-        InlineKeyboardButton("Skip", callback_data=f"skip:{pdf_msg.message_id}"),
-    ]])
-    await ctx.bot.send_message(
-        chat_id=_target_chat_id(ctx),
-        text=f"Recruiter message:\n\n{result.message}",
-        reply_markup=keyboard,
-    )
-    save_pending(pdf_msg.message_id, {
-        "cv_text": result.cv_text, "tg_message": result.message,
-        "role_title": result.role_title, "company": result.company,
-        "jd": jd[:500], "score": result.score,
-    })
+    await _handle_token_free(ctx, jd, telegram_message_url(msg))
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -319,35 +273,4 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Sent to @{job['contact_value'].lstrip('@')} with {job['resume_name']} (message {external_id})."
         )
         return
-    if config.TOKEN_FREE_MODE:
-        await query.edit_message_text("This legacy action expired after the token-free deployment.")
-        return
-    try:
-        action, ref_id_str = query.data.split(":", 1)
-        ref_id = int(ref_id_str)
-    except (ValueError, AttributeError):
-        await query.edit_message_text("Invalid action - please try again.")
-        return
-    payload = get_pending(ref_id)
-    if action == "skip":
-        await query.edit_message_text("Skipped.")
-        delete_pending(ref_id)
-    elif action == "send":
-        if not payload:
-            await query.edit_message_text("Data not found. Please try again.")
-            return
-        from rag import store as rag_store
-
-        rag_store.save_application(
-            jd=payload.get("jd", ""), cv=payload.get("cv_text", ""),
-            message=payload.get("tg_message", ""), score=payload.get("score", 0),
-            role=payload.get("role_title", ""), company=payload.get("company", ""),
-        )
-        await query.edit_message_text(f"Copy and send with the PDF:\n\n{payload['tg_message']}")
-        delete_pending(ref_id)
-    elif action == "edit":
-        if not payload:
-            await query.edit_message_text("Data not found. Please try again.")
-            return
-        await query.edit_message_text(f"Edit and send back to me:\n\n{payload['tg_message']}")
-
+    await query.edit_message_text("Unknown action.")

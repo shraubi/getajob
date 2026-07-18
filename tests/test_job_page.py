@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from job_page import JobPageError, UnsafeUrlError, extract_first_url, fetch_html, parse_job_html, resolve_application_url, validate_public_url
+from jobbot.integrations.job_page import JobPageError, UnsafeUrlError, extract_first_url, fetch_html, parse_job_html, resolve_application_url, validate_public_url
 
 MESSAGE = """[Staff Data Engineer (Azure)](https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) (https://hirify.me/jobs/711417-staff-data-engineer-azure-python?utm_source=subscription) in NDA"""
 
@@ -52,7 +52,7 @@ class JobPageTests(unittest.TestCase):
         parsed = parse_job_html(html, "https://example.com/vacancy/282")
         self.assertEqual(parsed.apply_url, "https://example.com/vacancy/282")
 
-    @patch("job_page.validate_public_url", new_callable=AsyncMock)
+    @patch("jobbot.integrations.job_page.validate_public_url", new_callable=AsyncMock)
     def test_follows_html_short_link_to_application_form(self, _validate):
         pages = {
             "/short": '<html><body><main><h1>Redirect</h1><p>Continue to the vacancy application below.</p><a href="https://apply.example/form">Apply</a></main></body></html>',
@@ -64,12 +64,12 @@ class JobPageTests(unittest.TestCase):
         result = asyncio.run(resolve_application_url("https://lnkd.in/short", transport=transport))
         self.assertEqual(result, "https://apply.example/form")
 
-    @patch("job_page._resolved_ips", return_value={__import__("ipaddress").ip_address("127.0.0.1")})
+    @patch("jobbot.integrations.job_page._resolved_ips", return_value={__import__("ipaddress").ip_address("127.0.0.1")})
     def test_rejects_private_destinations(self, _resolve):
         with self.assertRaises(UnsafeUrlError):
             asyncio.run(validate_public_url("https://example.com/jobs/1"))
 
-    @patch("job_page.validate_public_url", new_callable=AsyncMock)
+    @patch("jobbot.integrations.job_page.validate_public_url", new_callable=AsyncMock)
     def test_rejects_declared_oversize_before_reading_body(self, _validate):
         class ExplodingStream(httpx.AsyncByteStream):
             async def __aiter__(self):

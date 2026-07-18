@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 
-from hirify_client import HirifyClient, parse_contacts_response
+from jobbot.integrations.hirify import HirifyClient, parse_contacts_response
 
 
 class HirifyClientTests(unittest.TestCase):
