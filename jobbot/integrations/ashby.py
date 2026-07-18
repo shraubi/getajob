@@ -429,43 +429,83 @@ async def _submit_with_playwright(
                 if field.path not in preflight.submissions:
                     continue
                 value = preflight.submissions[field.path]
+                selector = f'[name={json.dumps(field.path)}]'
+                container_selector = f'[data-field-path={json.dumps(field.path)}]'
+                control = page.locator(selector)
+                container = page.locator(container_selector)
+
+                # Ashby's stable contract is the field path (name/id/data-field-path).
+                # Labels are presentation text and are not consistently exposed to
+                # Playwright's accessibility lookup.
+                if await control.count() == 0:
+                    control = page.get_by_label(field.title, exact=True)
+                if await container.count() == 0:
+                    title = page.get_by_text(field.title, exact=True)
+                    if await title.count() == 1:
+                        container = title.locator("xpath=..")
+
                 if value == "__resume__":
-                    control = page.locator("#_systemfield_resume")
-                    if await control.count() != 1:
-                        control = page.get_by_label(field.title, exact=True)
-                    if await control.count() != 1:
+                    upload = control.locator('input[type="file"]') if await control.count() else control
+                    if await upload.count() == 0 and await container.count() == 1:
+                        upload = container.locator('input[type="file"]')
+                    if await upload.count() != 1:
                         raise AshbyError(f"Could not locate Ashby field: {field.title}")
-                    await control.set_input_files(str(resume_path))
+                    await upload.set_input_files(str(resume_path))
                     continue
 
-                control = page.get_by_label(field.title, exact=True)
-                count = await control.count()
-                if count == 1:
-                    if field.field_type == "Boolean":
-                        await control.select_option("true" if value else "false")
-                    elif field.field_type == "MultiValueSelect":
-                        await control.select_option([str(item) for item in value])
-                    elif field.field_type == "ValueSelect":
-                        await control.select_option(str(value))
+                answer = (
+                    "Yes" if value is True
+                    else "No" if value is False
+                    else str(value)
+                )
+                native_select = control.locator("select") if await control.count() == 1 else control
+                if await control.count() == 1:
+                    tag_name = await control.evaluate(
+                        "(element) => element.tagName.toLowerCase()"
+                    )
+                    if tag_name == "select":
+                        native_select = control
+                if await native_select.count() == 1:
+                    if field.field_type == "MultiValueSelect":
+                        await native_select.select_option([str(item) for item in value])
                     else:
-                        await control.fill(
-                            json.dumps(value) if isinstance(value, dict) else str(value)
+                        await native_select.select_option(
+                            "true" if value is True else "false" if value is False else str(value)
                         )
                     continue
 
-                title = page.get_by_text(field.title, exact=True)
-                if await title.count() != 1:
+                if field.field_type in {"Boolean", "ValueSelect", "MultiValueSelect"}:
+                    if await container.count() != 1:
+                        raise AshbyError(f"Could not locate Ashby field: {field.title}")
+                    option = container.get_by_label(answer, exact=True)
+                    if await option.count() != 1:
+                        option = container.get_by_role("button", name=answer, exact=True)
+                    if await option.count() != 1:
+                        option = container.get_by_text(answer, exact=True)
+                    if await option.count() != 1:
+                        raise AshbyError(f"Could not select Ashby answer for: {field.title}")
+                    await option.click()
+                    continue
+
+                if await control.count() != 1:
                     raise AshbyError(f"Could not locate Ashby field: {field.title}")
-                container = title.locator("xpath=..")
-                option = container.get_by_role(
-                    "button", name=("Yes" if value is True else "No" if value is False else str(value)),
-                    exact=True,
-                )
-                if await option.count() != 1:
-                    option = container.get_by_label(str(value), exact=True)
-                if await option.count() != 1:
-                    raise AshbyError(f"Could not select Ashby answer for: {field.title}")
-                await option.click()
+                if isinstance(value, dict):
+                    if field.path == "_systemfield_location":
+                        text_value = str(value.get("country") or value.get("city") or "").strip()
+                    else:
+                        text_value = ", ".join(
+                            str(value.get(key)).strip()
+                            for key in ("city", "region", "country")
+                            if value.get(key)
+                        )
+                else:
+                    text_value = str(value)
+                await control.fill(text_value)
+                if field.field_type == "Location":
+                    await page.wait_for_timeout(300)
+                    option = page.get_by_role("option", name=text_value, exact=True)
+                    if await option.count() == 1:
+                        await option.click()
 
             submit = page.get_by_role("button", name="Submit Application", exact=True)
             if await submit.count() != 1:
