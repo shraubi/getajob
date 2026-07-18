@@ -34,4 +34,4 @@ Ralph is a standalone, read-only reviewer. It reuses the authorized Telegram use
 docker compose exec -T bot python -m ralph.review_chat
 ```
 
-It reviews at most 30 messages after the latest outgoing `Ralph-Run: <uuid>` marker and writes only structured findings and a checkpoint under `storage/`. If no marker exists, provide `--since <ISO timestamp>`.
+It reviews history in chronological chunks of 30 after the saved checkpoint or latest outgoing `Ralph-Run: <uuid>` marker. When more messages remain, run the same command again; no timestamp is needed. Without either boundary it reviews the most recent 30 messages. Reports include detected job links but never transcript text.

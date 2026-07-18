@@ -60,6 +60,8 @@ class ReviewReport:
     start_message_id: int
     end_message_id: int
     analyzed_messages: int
+    source_urls: tuple[str, ...]
+    has_more: bool
     findings: tuple[Finding, ...]
     created_at: str
 
@@ -75,6 +77,8 @@ class ReviewReport:
                 "end_message_id": self.end_message_id,
             },
             "analyzed_messages": self.analyzed_messages,
+            "source_urls": list(self.source_urls),
+            "has_more": self.has_more,
             "finding_count": len(self.findings),
             "findings": [finding.to_dict() for finding in self.findings],
             "created_at": self.created_at,

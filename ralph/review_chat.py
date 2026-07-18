@@ -11,7 +11,7 @@ from pathlib import Path
 
 from jobbot import config
 
-from .analyzer import analyze_interactions, group_interactions
+from .analyzer import analyze_interactions, extract_urls, group_interactions
 from .history import (
     RalphHistoryError,
     fetch_telegram_history,
@@ -60,6 +60,10 @@ async def run_review(args: argparse.Namespace) -> tuple[ReviewReport, Path]:
     end_message_id = (
         history.messages[-1].id if history.messages else history.boundary_message_id
     )
+    source_messages = (
+        ((history.seed_request,) if history.seed_request else ())
+        + history.messages
+    )
     report = ReviewReport(
         id=review_id,
         peer_key=history.peer_key,
@@ -68,6 +72,8 @@ async def run_review(args: argparse.Namespace) -> tuple[ReviewReport, Path]:
         start_message_id=history.boundary_message_id,
         end_message_id=end_message_id,
         analyzed_messages=len(history.messages),
+        source_urls=extract_urls(source_messages),
+        has_more=history.has_more,
         findings=findings,
         created_at=now,
     )
@@ -84,6 +90,10 @@ def _print_summary(report: ReviewReport, output: Path) -> None:
     )
     for finding in report.findings:
         print(f"- [{finding.severity}] {finding.rule_id}: {finding.summary}")
+    for url in report.source_urls:
+        print(f"  {url}")
+    if report.has_more:
+        print("More messages remain; run the same command again for the next chunk.")
     print(f"Report: {output}")
 
 
