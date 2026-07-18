@@ -787,7 +787,6 @@ async def _submit_with_playwright(
                 ).count() > 0
                 snapshot = _diagnostic_text(
                     {
-                        "attempt": attempt + 1,
                         "url": _diagnostic_url(page.url),
                         "form_visible": form_visible,
                         "submit_controls": [
@@ -804,7 +803,11 @@ async def _submit_with_playwright(
                     limit=1800,
                 )
                 if snapshot != last_snapshot:
-                    logger.info("Ashby submission state %s", snapshot)
+                    logger.info(
+                        "Ashby submission state attempt=%d %s",
+                        attempt + 1,
+                        snapshot,
+                    )
                     last_snapshot = snapshot
 
                 if outcome is not None:
