@@ -70,7 +70,7 @@ class TokenFreeFlowTests(unittest.TestCase):
 
     @patch("jobbot.application.extract_resume_text", return_value="")
     def test_splits_camel_case_filename_and_logs_scores(self, _extract):
-        with self.assertLogs("token_free", level="INFO") as logs:
+        with self.assertLogs("jobbot.application", level="INFO") as logs:
             direction = classify_resume(Path("Ekaterina_Tuganova_DataEngineer_v2.pdf"))
         self.assertEqual(direction, "data_engineering")
         self.assertIn("extracted_chars=0", logs.output[0])
@@ -81,7 +81,7 @@ class TokenFreeFlowTests(unittest.TestCase):
         return_value="Ekaterina Tuganova\nTechnical Support Engineer\nLinux troubleshooting and ticketing",
     )
     def test_uses_second_pdf_line_as_resume_role(self, _extract):
-        with self.assertLogs("token_free", level="INFO") as logs:
+        with self.assertLogs("jobbot.application", level="INFO") as logs:
             direction = classify_resume(Path("Ekaterina_Tuganova_Resume (1).pdf"))
         self.assertEqual(direction, "tech_support")
         self.assertIn("role_hint='Technical Support Engineer'", logs.output[0])
