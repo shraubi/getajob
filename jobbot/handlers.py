@@ -94,7 +94,8 @@ async def _handle_token_free(
                     if contact.kind == "url":
                         apply_url = await resolve_application_url(apply_url)
                     if is_ats_job_url(apply_url):
-                        parsed_page = await fetch_ats_page(apply_url)
+                        ats_page = await fetch_ats_page(apply_url)
+                        parsed_page = replace(ats_page, vacancy=vacancy)
                     else:
                         parsed_page = replace(
                             parsed_page,
@@ -115,7 +116,9 @@ async def _handle_token_free(
                             contact_value=str(direct.vacancy_id),
                         )
             if parsed_page.apply_url and is_ats_job_url(parsed_page.apply_url):
-                parsed_page = await fetch_ats_page(parsed_page.apply_url)
+                source_vacancy = parsed_page.vacancy
+                ats_page = await fetch_ats_page(parsed_page.apply_url)
+                parsed_page = replace(ats_page, vacancy=source_vacancy)
         except (JobPageError, HirifyError, AtsError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
@@ -179,6 +182,8 @@ async def _handle_token_free(
     if parsed_page:
         if parsed_page.contact_kind == "telegram":
             summary.append(f"Contact: @{parsed_page.contact_value.lstrip('@')}")
+        elif parsed_page.contact_kind == "email":
+            summary.append(f"Contact: {parsed_page.contact_value}")
         elif parsed_page.apply_url:
             summary.append(f"Apply: {parsed_page.apply_url}")
     summary.extend((f"Direction: {draft.direction}", f"Role: {draft.vacancy.title}", f"Company: {draft.vacancy.company}"))
@@ -208,6 +213,11 @@ async def _handle_token_free(
         provider = parsed_page.contact_value.title()
         confirmation = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"Apply through {provider}", callback_data=f"atsapply:{job_id[:24]}"),
+            InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
+        ]])
+    elif parsed_page and parsed_page.contact_kind == "email":
+        confirmation = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Email recruiter", url=f"mailto:{parsed_page.contact_value}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
     elif parsed_page and parsed_page.contact_kind == "telegram":
