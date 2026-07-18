@@ -15,9 +15,8 @@ _SOURCE_DB = Path(os.environ.get("RALPH_SOURCE_DB_PATH", "storage/jobs.db"))
 _RALPH_DB = Path(os.environ.get("RALPH_DB_PATH", "storage/ralph.db"))
 _REPORT_DIR = Path(os.environ.get("RALPH_REPORT_DIR", "storage/ralph/reviews"))
 _PEER_KEY = "jobbot-events"
-_GITHUB_REPOSITORY = os.environ.get("RALPH_GITHUB_REPOSITORY", "")
-_GITHUB_TOKEN = os.environ.get("RALPH_GITHUB_TOKEN", "")
-_GITHUB_MIN_SEVERITY = os.environ.get("RALPH_GITHUB_MIN_SEVERITY", "medium")
+_GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
+_GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 def review_once() -> tuple[ReviewReport, Path] | None:
     store = RalphStore(_RALPH_DB)
@@ -36,7 +35,7 @@ def review_once() -> tuple[ReviewReport, Path] | None:
     output = _REPORT_DIR / f"events-{review_id}.json"
     write_report(report, output)
     GitHubIssueOutbox(_RALPH_DB).enqueue_report(
-        report, min_severity=_GITHUB_MIN_SEVERITY
+        report, min_severity="medium"
     )
     store.save_review(report, output)
     return report, output
