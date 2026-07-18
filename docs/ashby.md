@@ -6,7 +6,7 @@ The bot recognizes public URLs shaped like:
 https://jobs.ashbyhq.com/<board>/<job-id>
 ```
 
-It reads the public Ashby job/form contract, selects the existing local résumé, and preflights every required field before it offers the Telegram confirmation button.
+It reads the public Ashby job/form contract, selects the existing local rÃ©sumÃ©, and preflights every required field before it offers the Telegram confirmation button.
 
 ## Applicant profile
 
@@ -37,11 +37,11 @@ The `answers` object remains available for genuinely vacancy-specific questions 
 
 ## Submission and anti-automation
 
-After explicit Telegram confirmation, Chromium opens the canonical `/application` page, fills the preflighted values, uploads the selected résumé, and presses Ashby's normal submit button. This lets Ashby's invisible reCAPTCHA execute normally.
+After explicit Telegram confirmation, Chromium opens the canonical `/application` page, fills the preflighted values, uploads the selected rÃ©sumÃ©, and presses Ashby's normal submit button. This lets Ashby's invisible reCAPTCHA execute normally.
 
 The bot does not generate, copy, replay, solve, or bypass CAPTCHA tokens. If Ashby displays an interactive challenge, rejects validation, blocks the application, or does not return a verifiable confirmation, the bot:
 
-1. records the attempt and status in SQLite without profile values or résumé contents;
+1. records the attempt and status in SQLite without profile values or rÃ©sumÃ© contents;
 2. keeps the job retryable rather than marking it successful;
 3. reports the exact blocker in Telegram;
 4. returns the canonical `/application` URL for manual completion.
@@ -65,7 +65,7 @@ account is not required and credentials must not be placed in `.env` or
 - The integration does not submit optional demographic surveys.
 - It does not bypass authentication, CAPTCHA, application limits, rate limits, or other anti-automation controls.
 - Success requires visible confirmation text; an HTTP 200 or redirect alone is not sufficient.
-- Résumés over Ashby's documented 50 MB form limit are rejected before browser launch.
+- RÃ©sumÃ©s over Ashby's documented 50 MB form limit are rejected before browser launch.
 
 ## Live smoke test
 

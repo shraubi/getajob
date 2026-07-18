@@ -54,9 +54,31 @@ class JobPageTests(unittest.TestCase):
 
     def test_detects_russian_javascript_apply_button(self):
         html = """<html><head><meta name="description" content="Python backend role with FastAPI and PostgreSQL for a distributed services team."></head>
-        <body><main><h1>Python-разработчик</h1><button>Отправить резюме</button></main></body></html>"""
+        <body><main><h1>Python-Ñ€Ð°Ð·Ñ€Ð°Ð±Ð¾Ñ‚Ñ‡Ð¸Ðº</h1><button>ÐžÑ‚Ð¿Ñ€Ð°Ð²Ð¸Ñ‚ÑŒ Ñ€ÐµÐ·ÑŽÐ¼Ðµ</button></main></body></html>"""
         parsed = parse_job_html(html, "https://example.com/vacancy/282")
         self.assertEqual(parsed.apply_url, "https://example.com/vacancy/282")
+
+    def test_uses_data_url_when_apply_href_is_javascript(self):
+        html = """<html><head><meta name="description" content="Build Python services and product interfaces for security teams around the world."></head>
+        <body><main><h1>Fullstack Engineer</h1>
+        <a href="javascript:void(0)" data-apply-url="https://jobs.ashbyhq.com/acme/11111111-1111-1111-1111-111111111111">Apply now</a>
+        </main></body></html>"""
+        parsed = parse_job_html(html, "https://careers.example/jobs/42")
+        self.assertEqual(
+            parsed.apply_url,
+            "https://jobs.ashbyhq.com/acme/11111111-1111-1111-1111-111111111111",
+        )
+
+    def test_extracts_http_target_from_apply_click_handler(self):
+        html = """<html><head><meta name="description" content="Build Python services and product interfaces for security teams around the world."></head>
+        <body><main><h1>Fullstack Engineer</h1>
+        <button onclick="window.location='https://jobs.ashbyhq.com/acme/22222222-2222-2222-2222-222222222222'">Apply</button>
+        </main></body></html>"""
+        parsed = parse_job_html(html, "https://careers.example/jobs/42")
+        self.assertEqual(
+            parsed.apply_url,
+            "https://jobs.ashbyhq.com/acme/22222222-2222-2222-2222-222222222222",
+        )
 
     @patch("jobbot.integrations.job_page.validate_public_url", new_callable=AsyncMock)
     def test_follows_html_short_link_to_application_form(self, _validate):
@@ -69,6 +91,19 @@ class JobPageTests(unittest.TestCase):
         ))
         result = asyncio.run(resolve_application_url("https://lnkd.in/short", transport=transport))
         self.assertEqual(result, "https://apply.example/form")
+
+    @patch("jobbot.integrations.job_page.validate_public_url", new_callable=AsyncMock)
+    def test_returns_contact_target_without_fetching_non_http_scheme(self, _validate):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200,
+            text='<html><body><a href="mailto:jobs@example.com">Apply by email</a></body></html>',
+            headers={"content-type": "text/html"},
+            request=request,
+        ))
+        result = asyncio.run(
+            resolve_application_url("https://careers.example/jobs/42", transport=transport)
+        )
+        self.assertEqual(result, "mailto:jobs@example.com")
 
     @patch("jobbot.integrations.job_page._resolved_ips", return_value={__import__("ipaddress").ip_address("127.0.0.1")})
     def test_rejects_private_destinations(self, _resolve):
