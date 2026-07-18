@@ -25,6 +25,13 @@ _ASHBY_HOST = "jobs.ashbyhq.com"
 _PATH_RE = re.compile(
     r"^/(?P<board>[^/?#]+)/(?P<job>[0-9a-fA-F-]{36})(?:/application)?/?$"
 )
+_FIELD_CONTAINER_XPATH = (
+    "xpath=ancestor::*["
+    "self::fieldset or "
+    "contains(concat(' ', normalize-space(@class), ' '), "
+    "' ashby-application-form-field-entry ')"
+    "][1]"
+)
 _JOB_QUERY = """
 query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
   jobPosting(
@@ -459,18 +466,20 @@ async def _submit_with_playwright(
                 )
                 if match_index is not None:
                     container = titles.nth(match_index).locator(
-                        "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
-                        "' ashby-application-form-field-entry ')][1]"
+                        _FIELD_CONTAINER_XPATH
                     )
 
                 if await container.count() == 0:
                     exact_name = f'[name={json.dumps(field.path)}]'
                     suffix_name = f'[name$={json.dumps(field.path)}]'
-                    control = page.locator(f"{exact_name}, {suffix_name}")
+                    exact_id = f'[id={json.dumps(field.path)}]'
+                    suffix_id = f'[id$={json.dumps(field.path)}]'
+                    control = page.locator(
+                        f"{exact_name}, {suffix_name}, {exact_id}, {suffix_id}"
+                    )
                     if await control.count() > 0:
                         container = control.first.locator(
-                            "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
-                            "' ashby-application-form-field-entry ')][1]"
+                            _FIELD_CONTAINER_XPATH
                         )
 
                 if await container.count() == 0:
@@ -485,8 +494,7 @@ async def _submit_with_playwright(
                         semantic_control = page.locator(semantic_selector)
                         if await semantic_control.count() == 1:
                             container = semantic_control.locator(
-                                "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
-                                "' ashby-application-form-field-entry ')][1]"
+                                _FIELD_CONTAINER_XPATH
                             )
 
                 if await container.count() == 0:
