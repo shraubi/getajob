@@ -21,6 +21,8 @@ RUN mkdir -p /app/data/resumes /app/storage
 
 FROM runtime AS bot
 RUN python -m playwright install-deps chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends xauth \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 # Ashby's invisible reCAPTCHA issues its token in a normal headed browser but
 # stalls in Chromium's headless mode. Xvfb supplies a private virtual display
