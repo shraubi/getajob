@@ -6,6 +6,14 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from jobbot import config
+from jobbot.integrations.ashby import (
+    AshbyError,
+    fetch_ashby_posting,
+    format_missing_questions,
+    is_ashby_job_url,
+    preflight_ashby_application,
+    submit_ashby_application,
+)
 from jobbot.integrations.hirify import HirifyError, HirifyClient, is_hirify_job_url
 from jobbot.integrations.job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
 from jobbot.store import (
@@ -55,10 +63,18 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         source_url = message_url or extract_first_url(text)
     except JobPageError:
         source_url = ""
+    ashby_preflight = None
     if source_url:
         await _notify(ctx, "Fetching and parsing the linked job page...")
         try:
-            parsed_page = await fetch_job_from_message(source_url)
+            if is_ashby_job_url(source_url):
+                ashby_posting = await fetch_ashby_posting(source_url)
+                parsed_page = ashby_posting.page
+            else:
+                parsed_page = await fetch_job_from_message(source_url)
+                if is_ashby_job_url(parsed_page.fetched_url):
+                    ashby_posting = await fetch_ashby_posting(parsed_page.fetched_url)
+                    parsed_page = ashby_posting.page
             if is_hirify_job_url(parsed_page.fetched_url):
                 contact = await _get_hirify_client().get_contact(parsed_page.fetched_url)
                 if contact:
@@ -86,7 +102,7 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
                             contact_kind="hirify_direct",
                             contact_value=str(direct.vacancy_id),
                         )
-        except (JobPageError, HirifyError) as exc:
+        except (JobPageError, HirifyError, AshbyError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
             return
@@ -103,6 +119,16 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
 
     if parsed_page and parsed_page.contact_kind == "telegram":
         draft = replace(draft, message=render_telegram_message(parsed_page.fetched_url))
+    if parsed_page and parsed_page.contact_kind == "ashby":
+        try:
+            ashby_preflight = await preflight_ashby_application(
+                parsed_page.fetched_url,
+                draft.resume_path,
+                config.APPLICATION_PROFILE_PATH,
+            )
+        except AshbyError as exc:
+            await _notify(ctx, f"Could not prepare the Ashby application: {exc}")
+            return
 
     job_id = save_fetched_job(
         config.JOBS_DB_PATH, parsed_page, draft.direction, draft.resume_path.name, draft.message
@@ -127,8 +153,21 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             filename=draft.resume_path.name,
             caption=f"Selected resume: {draft.direction}",
         )
+    if ashby_preflight and ashby_preflight.missing:
+        await _notify(
+            ctx,
+            format_missing_questions(ashby_preflight)
+            + "\nAdd these answers to applicant.json under \"answers\", then send the vacancy again.",
+        )
+        return
+
     confirmation = None
-    if parsed_page and parsed_page.contact_kind == "telegram":
+    if parsed_page and parsed_page.contact_kind == "ashby":
+        confirmation = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Apply through Ashby", callback_data=f"ashbyapply:{job_id[:24]}"),
+            InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
+        ]])
+    elif parsed_page and parsed_page.contact_kind == "telegram":
         confirmation = InlineKeyboardMarkup([[
             InlineKeyboardButton("Send to recruiter", callback_data=f"apply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
@@ -168,6 +207,50 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("applyskip:"):
         await query.edit_message_text("Application skipped.")
         return
+    if data.startswith("ashbyapply:"):
+        prefix = data.split(":", 1)[1]
+        job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
+        if not job or job["contact_kind"] != "ashby":
+            await query.edit_message_text("Saved Ashby application was not found.")
+            return
+        if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
+            await query.edit_message_text("This application is already sending or sent.")
+            return
+        try:
+            result = await submit_ashby_application(
+                job["page_url"],
+                config.RESUME_DIR / job["resume_name"],
+                config.APPLICATION_PROFILE_PATH,
+                config.ASHBY_BROWSER_PROFILE_PATH,
+                headless=config.ASHBY_BROWSER_HEADLESS,
+            )
+            if result.status == "submitted":
+                mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)
+                record_send_attempt(
+                    config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], "sent"
+                )
+                await query.edit_message_text(
+                    f"Application submitted through Ashby with {job['resume_name']}.\n{result.url}"
+                )
+                return
+            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], result.status
+            )
+            await query.edit_message_text(
+                f"Ashby needs your help: {result.detail}\nFinish here: {result.url}"
+            )
+            return
+        except Exception as exc:
+            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], "ashby", job["page_url"], "failed", exc
+            )
+            logger.exception("Ashby application failed for job %s", job["id"])
+            await query.edit_message_text(
+                f"Ashby application failed: {exc}\nFinish manually: {job['apply_url']}"
+            )
+            return
     if data.startswith("webapply:"):
         prefix = data.split(":", 1)[1]
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)

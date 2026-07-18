@@ -57,6 +57,6 @@ Put private resume PDFs in `data/resumes/`. They and all runtime state under `st
 - Web applications require a confirmation click and a positive success response.
 - Deployment resets tracked VM files to GitHub `main`; runtime data remains untracked.
 
-See [architecture](docs/architecture.md), [operations](docs/operations.md), and the [legacy archive](archive/legacy_llm/README.md).
+See [architecture](docs/architecture.md), [operations](docs/operations.md), [Ashby applications](docs/ashby.md), and the [legacy archive](archive/legacy_llm/README.md).
 
 Run a manual post-session review with `docker compose exec -T bot python -m ralph.review_chat`. Re-run the same command to process the next 30-message chunk.

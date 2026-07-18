@@ -1,0 +1,130 @@
+{
+  "data": {
+    "jobPosting": {
+      "id": "d77b2224-307f-48b1-a0ea-ab67153993c0",
+      "title": "Technical Support Engineer",
+      "departmentName": "Customer Operations",
+      "locationName": "Remote (Non-U.S.)",
+      "workplaceType": "Remote",
+      "employmentType": "FullTime",
+      "descriptionHtml": "<p>Clipboard connects healthcare professionals with open shifts. The Technical Support Engineer investigates customer issues, works across support and engineering, and improves operational tooling and reliability.</p>",
+      "linkedData": {
+        "hiringOrganization": {
+          "name": "Clipboard"
+        }
+      },
+      "applicationForm": {
+        "id": "clipboard-technical-support-form",
+        "sections": [
+          {
+            "title": null,
+            "fieldEntries": [
+              {
+                "id": "name-entry",
+                "field": {
+                  "id": "name",
+                  "type": "String",
+                  "path": "_systemfield_name",
+                  "humanReadablePath": "Name",
+                  "title": "Name"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "email-entry",
+                "field": {
+                  "id": "email",
+                  "type": "Email",
+                  "path": "_systemfield_email",
+                  "humanReadablePath": "Email",
+                  "title": "Email"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "resume-entry",
+                "field": {
+                  "id": "resume",
+                  "type": "File",
+                  "path": "_systemfield_resume",
+                  "humanReadablePath": "Resume",
+                  "title": "Resume"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "country-entry",
+                "field": {
+                  "id": "country",
+                  "type": "Location",
+                  "path": "clipboard_service_country",
+                  "title": "In which country will you perform services for Clipboard?"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "authorization-entry",
+                "field": {
+                  "id": "authorization",
+                  "type": "Boolean",
+                  "path": "clipboard_work_authorization",
+                  "title": "Are you authorized to work in your country of residence?"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "worked-entry",
+                "field": {
+                  "id": "worked",
+                  "type": "Boolean",
+                  "path": "clipboard_previously_worked",
+                  "title": "Have you ever worked for Clipboard?"
+                },
+                "isRequired": true
+              },
+              {
+                "id": "source-entry",
+                "field": {
+                  "id": "source",
+                  "type": "ValueSelect",
+                  "path": "clipboard_source",
+                  "title": "How did you hear about the position?",
+                  "metadata": {
+                    "selectableValues": [
+                      {"value": "LinkedIn"},
+                      {"value": "Indeed"},
+                      {"value": "Word of Mouth"},
+                      {"value": "Clipboard User"},
+                      {"value": "Other"}
+                    ]
+                  }
+                },
+                "isRequired": true
+              },
+              {
+                "id": "source-other-entry",
+                "field": {
+                  "id": "source-other",
+                  "type": "String",
+                  "path": "clipboard_source_other",
+                  "title": "If you selected other, please tell us how you heard about the position."
+                },
+                "isRequired": false
+              },
+              {
+                "id": "referrer-entry",
+                "field": {
+                  "id": "referrer",
+                  "type": "String",
+                  "path": "clipboard_referrer",
+                  "title": "Were you referred by someone at Clipboard? If so, who referred you?"
+                },
+                "isRequired": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
