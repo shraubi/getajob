@@ -13,6 +13,10 @@ import httpx
 from bs4 import BeautifulSoup
 
 from jobbot.application import Vacancy
+from jobbot.integrations.form_matching import (
+    best_field_label_match,
+    normalize_field_label,
+)
 from jobbot.integrations.job_page import ParsedJobPage, validate_public_url
 from jobbot.integrations.web_application import load_profile
 
@@ -440,18 +444,25 @@ async def _submit_with_playwright(
                     continue
                 value = preflight.submissions[field.path]
 
-                # Match the human-visible question first. Ashby's DOM names are not
-                # its API paths: custom fields may be prefixed and controls such as
-                # location autocomplete may have no matching name at all.
-                question = page.locator(
+                # Resolve against all visible labels with provider-neutral
+                # normalization. This handles whitespace, non-breaking spaces,
+                # punctuation, accents, and harmless presentation wording.
+                titles = page.locator(
                     ".ashby-application-form-question-title"
-                ).filter(
-                    has_text=re.compile(rf"^\\s*{re.escape(field.title)}\\s*$", re.IGNORECASE)
                 )
-                container = question.locator(
-                    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
-                    "' ashby-application-form-field-entry ')][1]"
+                visible_titles = await titles.all_inner_texts()
+                match_index = best_field_label_match(
+                    field.title, visible_titles
                 )
+                container = page.locator(
+                    '[data-jobbot-field-match="missing"]'
+                )
+                if match_index is not None:
+                    container = titles.nth(match_index).locator(
+                        "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                        "' ashby-application-form-field-entry ')][1]"
+                    )
+
                 if await container.count() == 0:
                     exact_name = f'[name={json.dumps(field.path)}]'
                     suffix_name = f'[name$={json.dumps(field.path)}]'
@@ -463,12 +474,26 @@ async def _submit_with_playwright(
                         )
 
                 if await container.count() == 0:
-                    visible_titles = await page.locator(
-                        ".ashby-application-form-question-title"
-                    ).all_inner_texts()
+                    semantic_selector = {
+                        "Email": 'input[type="email"]',
+                        "Phone": 'input[type="tel"]',
+                        "Number": 'input[type="number"]',
+                    }.get(field.field_type)
+                    if value == "__resume__":
+                        semantic_selector = 'input[type="file"]'
+                    if semantic_selector:
+                        semantic_control = page.locator(semantic_selector)
+                        if await semantic_control.count() == 1:
+                            container = semantic_control.locator(
+                                "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                                "' ashby-application-form-field-entry ')][1]"
+                            )
+
+                if await container.count() == 0:
                     raise AshbyError(
-                        f"Could not locate Ashby question: {field.title} "
-                        f"(visible questions={visible_titles})"
+                        f"Could not locate form field: {field.title} "
+                        f"(normalized={normalize_field_label(field.title)!r}, "
+                        f"visible questions={visible_titles})"
                     )
                 container = container.first
 
