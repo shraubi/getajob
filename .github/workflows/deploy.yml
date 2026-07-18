@@ -50,7 +50,18 @@ jobs:
             # ATS automation is headed under Xvfb, so it needs the full browser,
             # not Playwright's headless-only shell.
             docker compose run --rm --no-deps bot python -m playwright install chromium
-            docker compose up -d --wait --wait-timeout 45 bot ralph
+            if ! docker compose up -d --wait --wait-timeout 90 bot ralph; then
+              echo "Bot failed its authenticated Telegram readiness check."
+              docker compose ps || true
+              docker compose logs --no-color --tail=200 bot || true
+              bot_id="$(docker compose ps -q bot || true)"
+              if [ -n "$bot_id" ]; then
+                docker inspect --format \
+                  'state={{.State.Status}} health={{.State.Health.Status}} restarts={{.RestartCount}}' \
+                  "$bot_id" || true
+              fi
+              exit 1
+            fi
 
             # The bot becomes healthy only after Telegram accepts its token and
             # the polling application finishes initialization.
