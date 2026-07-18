@@ -400,7 +400,7 @@ async def _submit_with_playwright(
                     "application submitted", "thank you for applying", "application received"
                 )):
                     return AshbySubmissionResult("submitted", page.url, "Ashby confirmation page")
-                challenge = page.locator('iframe[title*="challenge" i], iframe[src*="/recaptcha/"][title*="recaptcha" i]')
+                challenge = page.locator('iframe[title*="challenge" i], iframe[src*="/bframe"]')
                 if await challenge.count() > 0 and await challenge.first.is_visible():
                     return AshbySubmissionResult(
                         "manual_required",
