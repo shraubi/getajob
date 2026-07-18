@@ -20,14 +20,20 @@ Add standard values and explicit screening answers to the untracked `storage/app
   "phone": "+33123456789",
   "location": {"country": "France", "city": "Paris"},
   "links": {"linkedin": "https://linkedin.com/in/example"},
+  "facts": {
+    "work_authorized_countries": ["France"],
+    "previous_employers": [],
+    "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
+  },
   "answers": {
-    "ashby-field-path": "An explicit answer",
-    "Exact question title": true
+    "Exact one-off question title": "Only use this for a vacancy-specific answer"
   }
 }
 ```
 
-Question paths are preferred because titles can change. The bot never infers work authorization, compensation, demographic data, or other screening answers.
+Reusable facts are matched semantically, so Ashby UUIDs and small wording changes do not matter. Source preferences are tried in order and only an option actually offered by the form is selected. `previous_employers: []` is an explicit statement that no listed employer applies; omitting the key leaves the answer unresolved.
+
+The `answers` object remains available for genuinely vacancy-specific questions and overrides semantic facts. Resume extraction is only a fallback for name, email, and phone; the private applicant profile is the source of truth for location, authorization, employment history, links, and screening preferences. The bot never infers work authorization, compensation, demographic data, or other screening answers.
 
 ## Submission and anti-automation
 
