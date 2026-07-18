@@ -62,10 +62,10 @@ class AshbyTests(unittest.TestCase):
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
                         "location": {"country": "France", "city": "Paris"},
-                        "answers": {
-                            "clipboard_work_authorization": True,
-                            "clipboard_previously_worked": False,
-                            "clipboard_source": "LinkedIn"
+                        "facts": {
+                            "work_authorized_countries": ["France"],
+                            "previous_employers": [],
+                            "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
                     }
                 ),
@@ -86,7 +86,9 @@ class AshbyTests(unittest.TestCase):
         self.assertEqual(preflight.missing, ())
         self.assertEqual(preflight.submissions["_systemfield_name"], "Ada Lovelace")
         self.assertEqual(preflight.submissions["_systemfield_resume"], "__resume__")
+        self.assertEqual(preflight.submissions["clipboard_work_authorization"], True)
         self.assertEqual(preflight.submissions["clipboard_previously_worked"], False)
+        self.assertEqual(preflight.submissions["clipboard_source"], "LinkedIn")
 
     def test_preflight_returns_actionable_missing_questions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -144,10 +146,10 @@ class AshbyTests(unittest.TestCase):
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
                         "location": {"country": "France"},
-                        "answers": {
-                            "clipboard_work_authorization": True,
-                            "clipboard_previously_worked": False,
-                            "clipboard_source": "LinkedIn"
+                        "facts": {
+                            "work_authorized_countries": ["France"],
+                            "previous_employers": [],
+                            "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
                     }
                 ),
