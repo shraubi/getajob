@@ -12,9 +12,10 @@ sys.modules.setdefault("dotenv", SimpleNamespace(load_dotenv=lambda: None))
 
 
 class InlineKeyboardButton:
-    def __init__(self, text, callback_data=None):
+    def __init__(self, text, callback_data=None, url=None):
         self.text = text
         self.callback_data = callback_data
+        self.url = url
 
 
 class InlineKeyboardMarkup:
@@ -63,6 +64,16 @@ class FakeHirifyClient:
         return Contact("telegram", "artem_avsievich")
 
 
+class FakeEmailHirifyClient:
+    async def get_contact(self, _url):
+        return Contact("email", "jobs@example.com")
+
+
+class FakeUrlHirifyClient:
+    async def get_contact(self, _url):
+        return Contact("url", "https://job-boards.greenhouse.io/example/jobs/735064")
+
+
 class FakeDirectHirifyClient:
     applied = []
 
@@ -101,6 +112,72 @@ class FakeQuery:
 
 
 class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_email_contact_has_action_button(self):
+        url = "https://hirify.me/jobs/740343-ai-engineer-applied-ai-engineer-python"
+        vacancy = Vacancy(
+            title="AI Engineer", company="Example",
+            description="AI engineer Python LLM role " * 5, url=url,
+        )
+        page = ParsedJobPage(vacancy, "structured_job_page", "", url)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "ai.pdf"
+            resume.write_bytes(b"pdf")
+            bot = FakeBot()
+            draft = ApplicationDraft(vacancy, "ml_engineering", resume, "")
+            with (
+                patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("jobbot.handlers._get_hirify_client", return_value=FakeEmailHirifyClient()),
+                patch("jobbot.handlers.build_application_for_vacancy", return_value=draft),
+                patch.object(config, "JOBS_DB_PATH", root / "jobs.db"),
+                patch.object(config, "RESUME_DIR", root),
+            ):
+                await _handle_token_free(SimpleNamespace(bot=bot), url)
+        button = bot.messages[-1]["reply_markup"].inline_keyboard[0][0]
+        self.assertEqual(button.url, "mailto:jobs@example.com")
+        self.assertIn("Contact: jobs@example.com", bot.messages[1]["text"])
+
+    async def test_ats_target_preserves_hirify_vacancy_for_classification(self):
+        url = "https://hirify.me/jobs/735064-senior-frontend-engineer-web3"
+        source_vacancy = Vacancy(
+            title="Senior Frontend Engineer Web3", company="Example",
+            description="Python backend platform engineering role " * 5, url=url,
+        )
+        source_page = ParsedJobPage(source_vacancy, "structured_job_page", "", url)
+        target_url = "https://job-boards.greenhouse.io/example/jobs/735064"
+        target_vacancy = Vacancy(
+            title="Sr Software Engineer, Front End", company="Example",
+            description="Frontend product role " * 5, url=target_url,
+        )
+        ats_page = ParsedJobPage(
+            target_vacancy, "greenhouse_application_form", target_url, target_url,
+            contact_kind="ats", contact_value="greenhouse",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "backend.pdf"
+            resume.write_bytes(b"pdf")
+            bot = FakeBot()
+            draft = ApplicationDraft(source_vacancy, "backend_python", resume, "")
+            builder = unittest.mock.Mock(return_value=draft)
+            preflight = AtsPreflight("greenhouse", ats_page, (), object())
+            with (
+                patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=source_page)),
+                patch("jobbot.handlers._get_hirify_client", return_value=FakeUrlHirifyClient()),
+                patch("jobbot.handlers.resolve_application_url", new=AsyncMock(return_value=target_url)),
+                patch("jobbot.handlers.fetch_ats_page", new=AsyncMock(return_value=ats_page)),
+                patch("jobbot.handlers.preflight_ats_application", new=AsyncMock(return_value=preflight)),
+                patch("jobbot.handlers.build_application_for_vacancy", builder),
+                patch.object(config, "JOBS_DB_PATH", root / "jobs.db"),
+                patch.object(config, "RESUME_DIR", root),
+                patch.object(config, "APPLICATION_PROFILE_PATH", root / "applicant.json"),
+            ):
+                await _handle_token_free(SimpleNamespace(bot=bot), url)
+        self.assertIs(builder.call_args.args[0], source_vacancy)
+        self.assertTrue(
+            bot.messages[-1]["reply_markup"].inline_keyboard[0][0].callback_data.startswith("atsapply:")
+        )
+
     async def test_hirify_direct_application_one_button_dry_run(self):
         url = "https://hirify.me/jobs/732800-python-developer"
         vacancy = Vacancy(
