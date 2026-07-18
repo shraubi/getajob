@@ -1,14 +1,19 @@
 FROM python:3.12-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-ARG REQUIREMENTS_FILE=requirements.txt
-COPY requirements*.txt ./
+COPY requirements.txt ./
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org \
     --trusted-host files.pythonhosted.org \
-    -r "${REQUIREMENTS_FILE}"
+    -r requirements.txt
 
-COPY . .
+COPY jobbot ./jobbot
+COPY scripts ./scripts
+COPY main.py ./
+RUN mkdir -p /app/data/resumes /app/storage
 
 CMD ["python", "main.py"]

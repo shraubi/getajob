@@ -1,6 +1,6 @@
 import unittest
 
-from classifier import classify
+from jobbot.classifier import classify
 
 
 class ClassifyTests(unittest.TestCase):

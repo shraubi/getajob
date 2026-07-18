@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_page import ParsedJobPage
-from jobs_store import (
+from jobbot.integrations.job_page import ParsedJobPage
+from jobbot.store import (
     claim_job_for_send,
     claim_telegram_job_for_send,
     get_job_by_prefix,
@@ -12,7 +12,7 @@ from jobs_store import (
     set_sender_cooldown,
 )
 from datetime import datetime, timedelta, timezone
-from token_free import Vacancy
+from jobbot.application import Vacancy
 
 
 class JobsStoreTests(unittest.TestCase):
@@ -49,4 +49,3 @@ class JobsStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

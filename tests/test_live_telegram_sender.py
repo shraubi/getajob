@@ -5,7 +5,7 @@ import os
 import unittest
 from pathlib import Path
 
-from telegram_sender import TelegramSender
+from jobbot.integrations.telegram_sender import TelegramSender
 
 
 @unittest.skipUnless(
@@ -41,4 +41,3 @@ class LiveTelegramSenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

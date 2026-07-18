@@ -38,11 +38,11 @@ storage_state_module.save_pending = lambda *_: None
 sys.modules.setdefault("storage", storage_module)
 sys.modules.setdefault("storage.state", storage_state_module)
 
-import config
-from bot.handlers import _handle_token_free, handle_callback
-from hirify_client import Contact, DirectApplication
-from job_page import ParsedJobPage
-from token_free import ApplicationDraft, Vacancy
+from jobbot import config
+from jobbot.handlers import _handle_token_free, handle_callback
+from jobbot.integrations.hirify import Contact, DirectApplication
+from jobbot.integrations.job_page import ParsedJobPage
+from jobbot.application import ApplicationDraft, Vacancy
 
 
 class FakeBot:
@@ -117,9 +117,9 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             client.applied.clear()
             draft = ApplicationDraft(vacancy, "backend_python", resume, "")
             with (
-                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
-                patch("bot.handlers._get_hirify_client", return_value=client),
-                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
+                patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("jobbot.handlers._get_hirify_client", return_value=client),
+                patch("jobbot.handlers.build_application_for_vacancy", return_value=draft),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
             ):
@@ -129,7 +129,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(button_data.startswith("hirifyapply:"))
             query = FakeQuery(button_data)
             with (
-                patch("bot.handlers._get_hirify_client", return_value=client),
+                patch("jobbot.handlers._get_hirify_client", return_value=client),
                 patch.object(config, "JOBS_DB_PATH", db_path),
             ):
                 await handle_callback(SimpleNamespace(callback_query=query), SimpleNamespace())
@@ -153,9 +153,9 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             bot = FakeBot()
             draft = ApplicationDraft(vacancy, "ml_engineering", resume, "")
             with (
-                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
-                patch("bot.handlers.is_hirify_job_url", return_value=False),
-                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
+                patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("jobbot.handlers.is_hirify_job_url", return_value=False),
+                patch("jobbot.handlers.build_application_for_vacancy", return_value=draft),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
             ):
@@ -167,7 +167,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             query = FakeQuery(button_data)
             submit = AsyncMock(return_value="https://www.jobposting.pro/application/success")
             with (
-                patch("bot.handlers.submit_application", new=submit),
+                patch("jobbot.handlers.submit_application", new=submit),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
@@ -196,9 +196,9 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             draft = ApplicationDraft(vacancy, "backend_python", resume, "old generic message")
 
             with (
-                patch("bot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
-                patch("bot.handlers._get_hirify_client", return_value=FakeHirifyClient()),
-                patch("bot.handlers.build_application_for_vacancy", return_value=draft),
+                patch("jobbot.handlers.fetch_job_from_message", new=AsyncMock(return_value=page)),
+                patch("jobbot.handlers._get_hirify_client", return_value=FakeHirifyClient()),
+                patch("jobbot.handlers.build_application_for_vacancy", return_value=draft),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
             ):
@@ -221,7 +221,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             update = SimpleNamespace(callback_query=query)
             FakeSender.calls.clear()
             with (
-                patch("bot.handlers.TelegramSender", FakeSender),
+                patch("jobbot.handlers.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "TELEGRAM_API_ID", 1),
@@ -236,7 +236,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
             duplicate_query = FakeQuery(button_data)
             with (
-                patch("bot.handlers.TelegramSender", FakeSender),
+                patch("jobbot.handlers.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
             ):
                 await handle_callback(SimpleNamespace(callback_query=duplicate_query), SimpleNamespace())

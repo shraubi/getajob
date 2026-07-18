@@ -1,45 +1,32 @@
 name: Deploy
 
-permissions:
-  contents: read
-  issues: write
-
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy lightweight bot to VM
+      - name: Deploy bot to VM
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          envs: GH_TOKEN,GITHUB_REPOSITORY
           script: |
             set -eu
             cd ${{ secrets.APP_DIR }}
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             docker compose build --pull bot
             docker compose up -d bot
-            if [ ! -f storage/ralph_first_loop_completed ]; then
-              sleep 10
-              docker compose exec -T bot python -m ralph.first_loop \
-                --url "https://hirify.me/jobs/720229-dataops-engineer" \
-                --expected-direction data_engineering
-              if [ -f storage/ralph_issue.json ]; then
-                docker compose exec -T \
-                  -e GITHUB_TOKEN="$GH_TOKEN" \
-                  -e GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-                  bot python -m ralph.github_issue
-              fi
-              touch storage/ralph_first_loop_completed
-            fi
             docker image prune -f
-
