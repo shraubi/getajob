@@ -8,6 +8,7 @@ services:
     environment:
       RESUME_DIR: /app/data/resumes
       JOBS_DB_PATH: /app/storage/jobs.db
+      PLAYWRIGHT_BROWSERS_PATH: /app/storage/playwright
     volumes:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
