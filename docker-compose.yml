@@ -9,3 +9,17 @@ services:
     volumes:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
+  ralph:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: ["python", "-m", "ralph.watch_events"]
+    environment:
+      RALPH_SOURCE_DB_PATH: /app/storage/jobs.db
+      RALPH_DB_PATH: /app/storage/ralph.db
+      RALPH_REPORT_DIR: /app/storage/ralph/reviews
+      RALPH_POLL_SECONDS: ${RALPH_POLL_SECONDS:-5}
+    volumes:
+      - ${DATA_DIR:-./storage}:/app/storage
+    depends_on:
+      - bot
