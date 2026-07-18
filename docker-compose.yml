@@ -7,6 +7,5 @@ services:
       RESUME_DIR: /app/data/resumes
       JOBS_DB_PATH: /app/storage/jobs.db
     volumes:
-      - ${CV_FILE:-./cv/base_cv.txt}:/app/cv/base_cv.txt:ro
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
