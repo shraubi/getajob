@@ -13,6 +13,7 @@ from jobbot.integrations.ashby import (
     AshbySubmissionResult,
     _diagnostic_text,
     _diagnostic_url,
+    _resolve_submit_control,
     fetch_ashby_posting,
     preflight_ashby_application,
     submit_ashby_application,
@@ -197,6 +198,41 @@ class AshbyTests(unittest.TestCase):
                 CLIPBOARD_URL + "/application?token=secret#private"
             ),
             CLIPBOARD_URL + "/application",
+        )
+
+
+    def test_submit_control_is_re_resolved_by_semantic_name_not_live_index(self):
+        class DynamicCandidates:
+            async def evaluate_all(self, _script):
+                return ["Upload file", "Submit Application"]
+
+            def nth(self, _index):
+                raise AssertionError("live DOM indices must not be clicked")
+
+        class StableSubmit:
+            async def count(self):
+                return 1
+
+        stable_submit = StableSubmit()
+
+        class FakePage:
+            def locator(self, _selector):
+                return DynamicCandidates()
+
+            def get_by_role(self, role, *, name, exact):
+                self.lookup = (role, name, exact)
+                return stable_submit
+
+        page = FakePage()
+        control, name, labels = asyncio.run(
+            _resolve_submit_control(page)
+        )
+        self.assertIs(control, stable_submit)
+        self.assertEqual(name, "Submit Application")
+        self.assertEqual(labels, ["Upload file", "Submit Application"])
+        self.assertEqual(
+            page.lookup,
+            ("button", "Submit Application", True),
         )
 
     def test_success_and_validation_failure_are_not_conflated(self):
