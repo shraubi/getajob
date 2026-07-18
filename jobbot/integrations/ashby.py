@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
@@ -47,7 +48,7 @@ def _diagnostic_text(value: object, *, limit: int = 300) -> str:
     text = _DIAGNOSTIC_EMAIL_RE.sub("[email]", text)
     text = _DIAGNOSTIC_SECRET_RE.sub(r"\1=[redacted]", text)
     if len(text) > limit:
-        return text[: limit - 1] + "â€¦"
+        return text[: limit - 1] + "…"
     return text
 
 
@@ -299,6 +300,14 @@ def _normalized(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
 
 
+def next_working_day(today: date | None = None) -> date:
+    """Return the next Monday-Friday date after ``today``."""
+    candidate = (today or date.today()) + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 def _facts(raw: dict) -> dict:
     return raw.get("facts") if isinstance(raw.get("facts"), dict) else {}
 
@@ -368,6 +377,24 @@ def _semantic_value(field: AshbyField, raw: dict, posting: AshbyPosting):
     ))
     if source_question:
         return _matching_option(field, facts.get("application_source_preferences"))
+
+    availability_question = any(phrase in title for phrase in (
+        "available to start",
+        "availability to start",
+        "when can you start",
+        "notice period",
+        "earliest start date",
+    ))
+    if availability_question:
+        configured_availability = facts.get(
+            "start_availability", "next_working_day"
+        )
+        availability = _normalized(configured_availability)
+        if availability in {"asap", "next working day", "next weekday"}:
+            start = next_working_day()
+            return f"Available to start on {start.strftime('%A, %B %d, %Y')}."
+        if str(configured_availability).strip():
+            return str(configured_availability).strip()
 
     return None
 
@@ -452,7 +479,7 @@ async def preflight_ashby_application(
             if any(str(item) not in field.options for item in supplied):
                 if field.required:
                     missing.append(
-                        f"{field.title} [{field.path}] â€” choose one of: {', '.join(field.options)}"
+                        f"{field.title} [{field.path}] — choose one of: {', '.join(field.options)}"
                     )
                 continue
         submissions[field.path] = value
@@ -463,7 +490,7 @@ def format_missing_questions(preflight: AshbyPreflight) -> str:
     if not preflight.missing:
         return ""
     return "Required Ashby answers are missing:\n" + "\n".join(
-        f"â€¢ {item}" for item in preflight.missing
+        f"• {item}" for item in preflight.missing
     )
 
 

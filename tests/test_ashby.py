@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +18,7 @@ from jobbot.integrations.ashby import (
     _resolve_submit_control,
     fetch_ashby_posting,
     preflight_ashby_application,
+    next_working_day,
     submit_ashby_application,
 )
 
@@ -44,6 +46,52 @@ def fixture_transport(payload=None):
 
 
 class AshbyTests(unittest.TestCase):
+    def test_next_working_day_skips_weekends(self):
+        self.assertEqual(next_working_day(date(2026, 7, 17)), date(2026, 7, 20))
+        self.assertEqual(next_working_day(date(2026, 7, 18)), date(2026, 7, 20))
+        self.assertEqual(next_working_day(date(2026, 7, 20)), date(2026, 7, 21))
+
+    def test_notice_period_defaults_to_next_working_day(self):
+        payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        entries = payload["data"]["jobPosting"]["applicationForm"]["sections"][0]["fieldEntries"]
+        entries.append({
+            "id": "availability-entry",
+            "isRequired": True,
+            "field": {
+                "path": "availability",
+                "title": "When are you available to start (what is your notice period)?",
+                "type": "LongText",
+            },
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "resume.pdf"
+            resume.write_bytes(b"pdf")
+            profile = root / "applicant.json"
+            profile.write_text(json.dumps({
+                "first_name": "Ada",
+                "last_name": "Lovelace",
+                "email": "ada@example.com",
+                "location": {"country": "Exampleland"},
+                "facts": {
+                    "work_authorized_countries": ["Exampleland"],
+                    "previous_employers": [],
+                    "application_source_preferences": ["LinkedIn"],
+                },
+            }), encoding="utf-8")
+            with (
+                patch("jobbot.integrations.ashby.validate_public_url", new=AsyncMock()),
+                patch("jobbot.integrations.web_application.extract_resume_text", return_value=""),
+                patch("jobbot.integrations.ashby.next_working_day", return_value=date(2026, 7, 20)),
+            ):
+                preflight = asyncio.run(preflight_ashby_application(
+                    CLIPBOARD_URL, resume, profile, transport=fixture_transport(payload)
+                ))
+        self.assertEqual(
+            preflight.submissions["availability"],
+            "Available to start on Monday, July 20, 2026.",
+        )
+
     def test_parses_clipboard_vacancy_and_form_contract(self):
         with patch("jobbot.integrations.ashby.validate_public_url", new=AsyncMock()):
             posting = asyncio.run(

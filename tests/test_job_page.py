@@ -54,7 +54,7 @@ class JobPageTests(unittest.TestCase):
 
     def test_detects_russian_javascript_apply_button(self):
         html = """<html><head><meta name="description" content="Python backend role with FastAPI and PostgreSQL for a distributed services team."></head>
-        <body><main><h1>Python-Ñ€Ð°Ð·Ñ€Ð°Ð±Ð¾Ñ‚Ñ‡Ð¸Ðº</h1><button>ÐžÑ‚Ð¿Ñ€Ð°Ð²Ð¸Ñ‚ÑŒ Ñ€ÐµÐ·ÑŽÐ¼Ðµ</button></main></body></html>"""
+        <body><main><h1>Python-разработчик</h1><button>Отправить резюме</button></main></body></html>"""
         parsed = parse_job_html(html, "https://example.com/vacancy/282")
         self.assertEqual(parsed.apply_url, "https://example.com/vacancy/282")
 
