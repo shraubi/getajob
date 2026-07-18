@@ -231,6 +231,82 @@ def _answer_lookup(raw: dict, field: AshbyField):
     return None
 
 
+def _normalized(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+
+
+def _facts(raw: dict) -> dict:
+    return raw.get("facts") if isinstance(raw.get("facts"), dict) else {}
+
+
+def _country(raw: dict) -> str:
+    location = raw.get("location")
+    if isinstance(location, dict):
+        return str(location.get("country") or "").strip()
+    return str(_facts(raw).get("country") or "").strip()
+
+
+def _matching_option(field: AshbyField, preferences) -> str | None:
+    if not field.options:
+        return None
+    if isinstance(preferences, str):
+        preferences = [preferences]
+    if not isinstance(preferences, list):
+        return None
+    by_name = {_normalized(option): option for option in field.options}
+    for preference in preferences:
+        match = by_name.get(_normalized(preference))
+        if match:
+            return match
+    return None
+
+
+def _semantic_value(field: AshbyField, raw: dict, posting: AshbyPosting):
+    facts = _facts(raw)
+    title = _normalized(field.title)
+    country = _country(raw)
+
+    authorization_question = any(phrase in title for phrase in (
+        "authorized to work",
+        "authorised to work",
+        "work authorization",
+        "work authorisation",
+        "legally eligible to work",
+        "right to work",
+    ))
+    if field.field_type == "Boolean" and authorization_question:
+        authorized = facts.get("work_authorized_countries")
+        if not isinstance(authorized, list) or not country:
+            return None
+        authorized_names = {_normalized(item) for item in authorized}
+        return "*" in authorized_names or _normalized(country) in authorized_names
+
+    previous_employer_question = any(phrase in title for phrase in (
+        "worked for",
+        "worked at",
+        "previously employed by",
+        "ever been employed by",
+    ))
+    if field.field_type == "Boolean" and previous_employer_question:
+        if "previous_employers" not in facts or not isinstance(facts["previous_employers"], list):
+            return None
+        company = _normalized(posting.page.vacancy.company)
+        employers = {_normalized(item) for item in facts["previous_employers"]}
+        return company in employers
+
+    source_question = any(phrase in title for phrase in (
+        "how did you hear",
+        "how did you find",
+        "how did you learn",
+        "where did you hear",
+        "source of application",
+    ))
+    if source_question:
+        return _matching_option(field, facts.get("application_source_preferences"))
+
+    return None
+
+
 def _standard_value(field: AshbyField, raw: dict, profile):
     path = field.path.casefold()
     title = field.title.casefold()
@@ -299,6 +375,8 @@ async def preflight_ashby_application(
         value = _answer_lookup(raw, field)
         if value is None:
             value = _standard_value(field, raw, profile)
+        if value is None:
+            value = _semantic_value(field, raw, posting)
         value = _coerce_value(field, value)
         if value is None or value == "" or value == []:
             if field.required:
