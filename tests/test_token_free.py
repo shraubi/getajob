@@ -12,7 +12,7 @@ from jobbot.application import (
     parse_vacancy,
     select_resume,
 )
-from classifier import classify
+from jobbot.classifier import classify
 
 
 class TokenFreeFlowTests(unittest.TestCase):

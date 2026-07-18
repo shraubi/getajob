@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from classifier import classify, score_directions
+from jobbot.classifier import classify, score_directions
 
 logger = logging.getLogger(__name__)
 
