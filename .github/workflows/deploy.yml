@@ -49,3 +49,13 @@ jobs:
             docker compose run --rm --no-deps bot python -m playwright uninstall --all || true
             docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
             docker compose up -d bot ralph
+
+            # `up -d` can succeed even when the process immediately crashes
+            # under the restart policy. Make runtime startup part of deploy.
+            sleep 10
+            docker compose ps
+            docker compose logs --no-color --tail=100 bot
+            bot_id="$(docker compose ps -q bot)"
+            test -n "$bot_id"
+            test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
+            test "$(docker inspect --format '{{.RestartCount}}' "$bot_id")" = "0"
