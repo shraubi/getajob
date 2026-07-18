@@ -6,10 +6,11 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 
 from jobbot import config
 from jobbot.handlers import handle_callback, handle_vacancy_message
+from jobbot.logging_config import configure_logging
 
 
 def run() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     logging.info("Starting deterministic job bot; resumes: %s", config.RESUME_DIR)
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()

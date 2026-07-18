@@ -34,6 +34,10 @@ _DIAGNOSTIC_EMAIL_RE = re.compile(
 _DIAGNOSTIC_SECRET_RE = re.compile(
     r"(?i)\b(authorization|cookie|password|secret|token)\s*[:=]\s*\S+"
 )
+_RECAPTCHA_IFRAME_SELECTOR = (
+    'iframe[title*="recaptcha" i], iframe[title*="challenge" i], '
+    'iframe[src*="/anchor"], iframe[src*="/bframe"]'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +63,19 @@ def _append_diagnostic(events: list[str], value: object) -> None:
     if event:
         events.append(event)
         del events[:-20]
+
+
+def _recaptcha_requires_user(
+    *,
+    control_present: bool,
+    challenge_visible: bool,
+    token_present: bool,
+) -> bool:
+    """Return whether Ashby's reCAPTCHA gate still needs human input."""
+    return (
+        (control_present or challenge_visible)
+        and not token_present
+    )
 
 
 _FIELD_CONTAINER_XPATH = (
@@ -431,461 +448,4 @@ async def preflight_ashby_application(
                 missing.append(f"{field.title} [{field.path}]")
             continue
         if field.options:
-            supplied = value if isinstance(value, list) else [value]
-            if any(str(item) not in field.options for item in supplied):
-                if field.required:
-                    missing.append(
-                        f"{field.title} [{field.path}] â€” choose one of: {', '.join(field.options)}"
-                    )
-                continue
-        submissions[field.path] = value
-    return AshbyPreflight(posting, submissions, tuple(missing))
-
-
-def format_missing_questions(preflight: AshbyPreflight) -> str:
-    if not preflight.missing:
-        return ""
-    return "Required Ashby answers are missing:\n" + "\n".join(
-        f"â€¢ {item}" for item in preflight.missing
-    )
-
-
-async def _resolve_submit_control(page):
-    """Resolve a matched action by semantic identity, never a live DOM index."""
-    candidates = page.locator(
-        'button:visible, input[type="submit"]:visible, [role="button"]:visible'
-    )
-    labels = await candidates.evaluate_all(
-        """(elements) => elements.map((element) => (
-            element.innerText ||
-            element.value ||
-            element.getAttribute("aria-label") ||
-            element.getAttribute("title") ||
-            ""
-        ).trim())"""
-    )
-    match_index = best_submit_control_match(labels)
-    if match_index is None:
-        raise AshbyError(
-            "Could not identify a unique submit control "
-            f"(visible controls={labels})"
-        )
-
-    accessible_name = str(labels[match_index]).strip()
-    control = page.get_by_role(
-        "button",
-        name=accessible_name,
-        exact=True,
-    )
-    count = await control.count()
-    if count != 1:
-        raise AshbyError(
-            "Matched submit intent but could not re-resolve one stable "
-            f"semantic control (name={accessible_name!r}, count={count}, "
-            f"visible controls={labels})"
-        )
-    return control, accessible_name, labels
-
-
-async def _submit_with_playwright(
-    preflight: AshbyPreflight,
-    resume_path: Path,
-    browser_profile_path: Path,
-    headless: bool,
-) -> AshbySubmissionResult:
-    try:
-        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        raise AshbyError("Playwright is not installed for Ashby browser submission") from exc
-
-    browser_profile_path.mkdir(parents=True, exist_ok=True)
-    async with async_playwright() as playwright:
-        context = await playwright.chromium.launch_persistent_context(
-            str(browser_profile_path),
-            headless=headless,
-        )
-        try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            diagnostic_events: list[str] = []
-
-            def capture_console(message) -> None:
-                if message.type in {"warning", "error"}:
-                    _append_diagnostic(
-                        diagnostic_events,
-                        f"console {message.type}: {message.text}",
-                    )
-
-            def capture_page_error(error) -> None:
-                _append_diagnostic(
-                    diagnostic_events,
-                    f"page error: {type(error).__name__}: {error}",
-                )
-
-            def capture_request_failure(request) -> None:
-                _append_diagnostic(
-                    diagnostic_events,
-                    f"request failed: {request.method} "
-                    f"{_diagnostic_url(request.url)} ({request.failure})",
-                )
-
-            def capture_response(response) -> None:
-                if response.request.method == "POST" or response.status >= 400:
-                    _append_diagnostic(
-                        diagnostic_events,
-                        f"response: {response.request.method} {response.status} "
-                        f"{_diagnostic_url(response.url)}",
-                    )
-
-            page.on("console", capture_console)
-            page.on("pageerror", capture_page_error)
-            page.on("requestfailed", capture_request_failure)
-            page.on("response", capture_response)
-
-            logger.info(
-                "Ashby submission opening url=%s headless=%s fields=%d",
-                _diagnostic_url(preflight.posting.page.apply_url),
-                headless,
-                len(preflight.submissions),
-            )
-            await page.goto(preflight.posting.page.apply_url, wait_until="domcontentloaded", timeout=30_000)
-            try:
-                await page.locator(".ashby-application-form-field-entry").first.wait_for(
-                    state="visible",
-                    timeout=20_000,
-                )
-            except PlaywrightTimeoutError as exc:
-                raise AshbyError(
-                    "Ashby application form did not render within 20 seconds "
-                    f"(url={page.url}, title={await page.title()!r})"
-                ) from exc
-
-            for field in preflight.posting.fields:
-                if field.path not in preflight.submissions:
-                    continue
-                value = preflight.submissions[field.path]
-
-                # Resolve against all visible labels with provider-neutral
-                # normalization. This handles whitespace, non-breaking spaces,
-                # punctuation, accents, and harmless presentation wording.
-                titles = page.locator(
-                    ".ashby-application-form-question-title"
-                )
-                visible_titles = await titles.all_inner_texts()
-                match_index = best_field_label_match(
-                    field.title, visible_titles
-                )
-                container = page.locator(
-                    '[data-jobbot-field-match="missing"]'
-                )
-                if match_index is not None:
-                    container = titles.nth(match_index).locator(
-                        _FIELD_CONTAINER_XPATH
-                    )
-
-                if await container.count() == 0:
-                    exact_name = f'[name={json.dumps(field.path)}]'
-                    suffix_name = f'[name$={json.dumps(field.path)}]'
-                    exact_id = f'[id={json.dumps(field.path)}]'
-                    suffix_id = f'[id$={json.dumps(field.path)}]'
-                    control = page.locator(
-                        f"{exact_name}, {suffix_name}, {exact_id}, {suffix_id}"
-                    )
-                    if await control.count() > 0:
-                        container = control.first.locator(
-                            _FIELD_CONTAINER_XPATH
-                        )
-
-                if await container.count() == 0:
-                    semantic_selector = {
-                        "Email": 'input[type="email"]',
-                        "Phone": 'input[type="tel"]',
-                        "Number": 'input[type="number"]',
-                    }.get(field.field_type)
-                    if value == "__resume__":
-                        semantic_selector = 'input[type="file"]'
-                    if semantic_selector:
-                        semantic_control = page.locator(semantic_selector)
-                        if await semantic_control.count() == 1:
-                            container = semantic_control.locator(
-                                _FIELD_CONTAINER_XPATH
-                            )
-
-                if await container.count() == 0:
-                    raise AshbyError(
-                        f"Could not locate form field: {field.title} "
-                        f"(normalized={normalize_field_label(field.title)!r}, "
-                        f"visible questions={visible_titles})"
-                    )
-                container = container.first
-
-                if value == "__resume__":
-                    upload = container.locator('input[type="file"]')
-                    if await upload.count() == 0:
-                        raise AshbyError(f"Could not locate upload control for: {field.title}")
-                    await upload.first.set_input_files(str(resume_path))
-                    continue
-
-                answer = (
-                    "Yes" if value is True
-                    else "No" if value is False
-                    else str(value)
-                )
-                native_select = container.locator("select:visible")
-                if await native_select.count() > 0:
-                    if field.field_type == "MultiValueSelect":
-                        await native_select.first.select_option([str(item) for item in value])
-                    else:
-                        await native_select.first.select_option(
-                            "true" if value is True else "false" if value is False else str(value)
-                        )
-                    continue
-
-                if field.field_type in {"Boolean", "ValueSelect", "MultiValueSelect"}:
-                    answers = value if isinstance(value, list) else [value]
-                    for item in answers:
-                        item_text = (
-                            "Yes" if item is True
-                            else "No" if item is False
-                            else str(item)
-                        )
-                        option = container.get_by_label(item_text, exact=True)
-                        if await option.count() == 0:
-                            option = container.get_by_role("button", name=item_text, exact=True)
-                        if await option.count() == 0:
-                            option = container.get_by_text(item_text, exact=True)
-                        if await option.count() == 0:
-                            raise AshbyError(
-                                f"Could not select Ashby answer {item_text!r} for: {field.title}"
-                            )
-                        await option.first.click()
-                    continue
-
-                control = container.locator(
-                    'input:not([type="radio"]):not([type="checkbox"]):visible, '
-                    "textarea:visible, [role=\"combobox\"]:visible"
-                )
-                if await control.count() == 0:
-                    raise AshbyError(f"Could not locate input control for: {field.title}")
-                control = control.first
-                if isinstance(value, dict):
-                    if "country" in _normalized(field.title):
-                        text_value = str(value.get("country") or "").strip()
-                    else:
-                        text_value = ", ".join(
-                            str(value.get(key)).strip()
-                            for key in ("city", "region", "country")
-                            if value.get(key)
-                        )
-                else:
-                    text_value = str(value)
-                await control.fill(text_value)
-
-                if field.field_type == "Location":
-                    option = page.get_by_role("option", name=text_value, exact=True)
-                    try:
-                        await option.first.wait_for(state="visible", timeout=5_000)
-                    except PlaywrightTimeoutError as exc:
-                        raise AshbyError(
-                            f"Ashby location option did not appear for: {text_value}"
-                        ) from exc
-                    await option.first.click()
-
-            submit_control, submit_name, submit_labels = (
-                await _resolve_submit_control(page)
-            )
-            selected_submit_label = _diagnostic_text(submit_name)
-            initial_url = page.url
-            logger.info(
-                "Ashby submission clicking control=%r enabled=%s url=%s "
-                "visible_controls=%s",
-                selected_submit_label,
-                await submit_control.is_enabled(),
-                _diagnostic_url(initial_url),
-                [_diagnostic_text(label, limit=80) for label in submit_labels],
-            )
-            await submit_control.click()
-            logger.info(
-                "Ashby submission click completed control=%r url=%s",
-                selected_submit_label,
-                _diagnostic_url(page.url),
-            )
-
-            last_snapshot = ""
-            for attempt in range(60):
-                await page.wait_for_timeout(500)
-
-                success_regions = page.locator(
-                    ".ashby-application-form-success-container"
-                )
-                success_visible = False
-                success_messages: list[str] = []
-                for index in range(await success_regions.count()):
-                    region = success_regions.nth(index)
-                    if await region.is_visible():
-                        success_visible = True
-                        text = (await region.inner_text()).strip()
-                        if text:
-                            success_messages.append(text)
-
-                failure_regions = page.locator(
-                    '.ashby-application-form-failure-container, [role="alert"]'
-                )
-                failure_visible = False
-                failure_messages: list[str] = []
-                for index in range(await failure_regions.count()):
-                    region = failure_regions.nth(index)
-                    if await region.is_visible():
-                        text = (await region.inner_text()).strip()
-                        if text:
-                            failure_visible = True
-                            failure_messages.append(text)
-
-                challenge = page.locator(
-                    'iframe[title*="challenge" i], iframe[src*="/bframe"]'
-                )
-                challenge_visible = False
-                for index in range(await challenge.count()):
-                    if await challenge.nth(index).is_visible():
-                        challenge_visible = True
-                        break
-
-                outcome = classify_form_submission(
-                    success_present=success_visible,
-                    success_text="; ".join(success_messages)[:1000],
-                    failure_present=failure_visible,
-                    failure_text="; ".join(failure_messages)[:1000],
-                    challenge_present=challenge_visible,
-                    challenge_text="Interactive verification is required",
-                )
-
-                invalid_controls = page.locator(
-                    'input:invalid:visible, textarea:invalid:visible, '
-                    'select:invalid:visible, [aria-invalid="true"]:visible'
-                )
-                invalid_details = await invalid_controls.evaluate_all(
-                    """(elements) => elements.map((element) => ({
-                        field: (
-                            element.getAttribute("aria-label") ||
-                            element.name ||
-                            element.id ||
-                            element.type ||
-                            element.tagName
-                        ),
-                        message: (
-                            element.validationMessage ||
-                            element.getAttribute("aria-errormessage") ||
-                            ""
-                        )
-                    }))"""
-                )
-                live_texts = [
-                    _diagnostic_text(text, limit=160)
-                    for text in await page.locator(
-                        '[role="status"]:visible, [aria-live]:visible'
-                    ).all_inner_texts()
-                    if text.strip()
-                ][:6]
-                heading_texts = [
-                    _diagnostic_text(text, limit=120)
-                    for text in await page.locator(
-                        "h1:visible, h2:visible, h3:visible"
-                    ).all_inner_texts()
-                    if text.strip()
-                ][:6]
-                current_submit_labels = await page.locator(
-                    'button:visible, input[type="submit"]:visible, '
-                    '[role="button"]:visible'
-                ).evaluate_all(
-                    """(elements) => elements.map((element) => (
-                        element.innerText ||
-                        element.value ||
-                        element.getAttribute("aria-label") ||
-                        element.getAttribute("title") ||
-                        ""
-                    ).trim())"""
-                )
-                form_still_present = await page.locator(
-                    ".ashby-application-form-field-entry, input[type=\"file\"]"
-                ).count() > 0
-                snapshot = _diagnostic_text(
-                    {
-                        "url": _diagnostic_url(page.url),
-                        "form_present": form_still_present,
-                        "submit_controls": [
-                            _diagnostic_text(label, limit=80)
-                            for label in current_submit_labels
-                        ],
-                        "success_visible": success_visible,
-                        "failure_messages": failure_messages,
-                        "challenge_visible": challenge_visible,
-                        "invalid_controls": invalid_details,
-                        "live_regions": live_texts,
-                        "headings": heading_texts,
-                    },
-                    limit=1800,
-                )
-                if snapshot != last_snapshot:
-                    logger.info(
-                        "Ashby submission state attempt=%d %s",
-                        attempt + 1,
-                        snapshot,
-                    )
-                    last_snapshot = snapshot
-
-                if outcome is not None:
-                    logger.info(
-                        "Ashby submission outcome status=%s detail=%s url=%s events=%s",
-                        outcome.status,
-                        _diagnostic_text(outcome.detail),
-                        _diagnostic_url(page.url),
-                        diagnostic_events,
-                    )
-                    return AshbySubmissionResult(
-                        outcome.status,
-                        page.url,
-                        outcome.detail,
-                    )
-                if page.url != initial_url and not form_still_present:
-                    logger.info(
-                        "Ashby submission inferred from navigation initial_url=%s "
-                        "final_url=%s events=%s",
-                        _diagnostic_url(initial_url),
-                        _diagnostic_url(page.url),
-                        diagnostic_events,
-                    )
-                    return AshbySubmissionResult(
-                        "submitted", page.url, "Application form completed"
-                    )
-            diagnostic_summary = _diagnostic_text(
-                f"state={last_snapshot}; events={diagnostic_events[-8:]}",
-                limit=2600,
-            )
-            logger.warning(
-                "Ashby submission outcome remained pending after 30s: %s",
-                diagnostic_summary,
-            )
-            return AshbySubmissionResult(
-                "manual_required",
-                page.url,
-                "The form did not expose a verifiable submission outcome.\n"
-                f"Diagnostics: {diagnostic_summary}",
-            )
-        finally:
-            await context.close()
-
-
-async def submit_ashby_application(
-    url: str,
-    resume_path: Path,
-    profile_path: Path,
-    browser_profile_path: Path,
-    *,
-    headless: bool = True,
-    browser_submitter: BrowserSubmitter | None = None,
-) -> AshbySubmissionResult:
-    preflight = await preflight_ashby_application(url, resume_path, profile_path)
-    if preflight.missing:
-        raise AshbyError(format_missing_questions(preflight))
-    submitter = browser_submitter or _submit_with_playwright
-    return await submitter(preflight, resume_path, browser_profile_path, headless)
+            supplied = vuÛÎ½¶‰žËkºwµçW7–æ2FVbÇ•öF—&V7B‡6VÆbÂf6æ7•ö–B“ Ð¢6VÆbæÆ–VBæVæB‡f6æ7•ö–BÐ¢&WGW&â““Ð Ð Ð¦6Æ72f¶U6VæFW# Ð¢6ÆÇ2ÒµÐÐ Ð¢FVbõö–æ—Eõò‡6VÆbÂ¥ö&w2“ Ð¢70Ð Ð¢7–æ2FVb6VæE÷&W7VÖR‡6VÆbÂW6W&æÖRÂÖW76vRÂ&W7VÖU÷F‚“ Ð¢6VÆbæ6ÆÇ2æVæB‚‡W6W&æÖRÂÖW76vRÂ&W7VÖU÷F‚ææÖR’Ð¢&WGW&âC#C Ð Ð Ð¦6Æ72f¶UVW'“ Ð¢FVbõö–æ—Eõò‡6VÆbÂFF“ Ð¢6VÆbæFFÒFFÐ¢6VÆbæVF—FVBÒ" Ð Ð¢7–æ2FVbç7vW"‡6VÆb“ Ð¢70Ð Ð¢7–æ2FVbVF—EöÖW76vU÷FW‡B‡6VÆbÂFW‡B“ Ð¢6VÆbæVF—FVBÒFW‡@Ð Ð Ð¦6Æ72&÷DÆ–6F–öäfÆ÷uFW7G2‡Væ—GFW7Bä—6öÆFVD7–æ6–õFW7D66R“ Ð¢7–æ2FVbFW7EöVÖ–Åö6öçF7Eö†5ö7F–öåö'WGFöâ‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢òö†—&–g’æÖRö¦ö'2ósC3C2Ö’ÖVæv–æVW"ÖÆ–VBÖ’ÖVæv–æVW"×—F†öâ Ð¢f6æ7’Òf6æ7’€Ð¢F—FÆSÒ$’Væv–æVW""Â6ö×ç“Ò$W†×ÆR"ÀÐ¢FW67&—F–öãÒ$’Væv–æVW"—F†öâÄÄÒ&öÆR"¢RÂW&Ã×W&ÂÀÐ¢Ð¢vRÒ'6VD¦ö%vR‡f6æ7’Â'7G'V7GW&VEö¦ö%÷vR"Â""ÂW&ÂÐ¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&’çFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢&÷BÒf¶T&÷B‚Ð¢G&gBÒÆ–6F–öäG&gB‡f6æ7’Â&ÖÅöVæv–æVW&–ær"Â&W7VÖRÂ""Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…ö¦ö%ög&öÕöÖW76vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åövWEö†—&–g•ö6Æ–VçB"Â&WGW&å÷fÇVSÔf¶TVÖ–Ä†—&–g”6Æ–VçB‚’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â&WGW&å÷fÇVSÖG&gB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"Â&ö÷Bò&¦ö'2æF""’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR…6–×ÆTæÖW76R†&÷CÖ&÷B’ÂW&ÂÐ¢'WGFöâÒ&÷BæÖW76vW5²ÓÕ²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³ÐÐ¢6VÆbæ76W'DWVÂ†'WGFöâçW&ÂÂ&Ö–ÇFó¦¦ö'4W†×ÆRæ6öÒ"Ð¢6VÆbæ76W'D–â‚$6öçF7C¢¦ö'4W†×ÆRæ6öÒ"Â&÷BæÖW76vW5³Õ²'FW‡B%ÒÐ Ð¢7–æ2FVbFW7EöG5÷F&vWE÷&W6W'fW5ö†—&–g•÷f6æ7•öf÷%ö6Æ76–f–6F–öâ‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢òö†—&–g’æÖRö¦ö'2ós3ScB×6Væ–÷"Ög&öçFVæBÖVæv–æVW"×vV#2 Ð¢6÷W&6U÷f6æ7’Òf6æ7’€Ð¢F—FÆSÒ%6Væ–÷"g&öçFVæBVæv–æVW"vV#2"Â6ö×ç“Ò$W†×ÆR"ÀÐ¢FW67&—F–öãÒ%—F†öâ&6¶VæBÆFf÷&ÒVæv–æVW&–ær&öÆR"¢RÂW&Ã×W&ÂÀÐ¢Ð¢6÷W&6U÷vRÒ'6VD¦ö%vR‡6÷W&6U÷f6æ7’Â'7G'V7GW&VEö¦ö%÷vR"Â""ÂW&ÂÐ¢F&vWE÷W&ÂÒ&‡GG3¢òö¦ö"Ö&ö&G2æw&VVæ†÷W6Ræ–òöW†×ÆRö¦ö'2ós3ScB Ð¢F&vWE÷f6æ7’Òf6æ7’€Ð¢F—FÆSÒ%7"6ögGv&RVæv–æVW"Âg&öçBVæB"Â6ö×ç“Ò$W†×ÆR"ÀÐ¢FW67&—F–öãÒ$g&öçFVæB&öGV7B&öÆR"¢RÂW&Ã×F&vWE÷W&ÂÀÐ¢Ð¢G5÷vRÒ'6VD¦ö%vR€Ð¢F&vWE÷f6æ7’Â&w&VVæ†÷W6UöÆ–6F–öåöf÷&Ò"ÂF&vWE÷W&ÂÂF&vWE÷W&ÂÀÐ¢6öçF7Eö¶–æCÒ&G2"Â6öçF7E÷fÇVSÒ&w&VVæ†÷W6R"ÀÐ¢Ð¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&&6¶VæBçFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢&÷BÒf¶T&÷B‚Ð¢G&gBÒÆ–6F–öäG&gB‡6÷W&6U÷f6æ7’Â&&6¶VæE÷—F†öâ"Â&W7VÖRÂ""Ð¢'V–ÆFW"ÒVæ—GFW7BæÖö6²äÖö6²‡&WGW&å÷fÇVSÖG&gBÐ¢&VfÆ–v‡BÒG5&VfÆ–v‡B‚&w&VVæ†÷W6R"ÂG5÷vRÂ‚’Âö&¦V7B‚’Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…ö¦ö%ög&öÕöÖW76vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×6÷W&6U÷vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åövWEö†—&–g•ö6Æ–VçB"Â&WGW&å÷fÇVSÔf¶UW&Ä†—&–g”6Æ–VçB‚’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2ç&W6öÇfUöÆ–6F–öå÷W&Â"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×F&vWE÷W&Â’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…öG5÷vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVSÖG5÷vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2ç&VfÆ–v‡EöG5öÆ–6F–öâ"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×&VfÆ–v‡B’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â'V–ÆFW"’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"Â&ö÷Bò&¦ö'2æF""’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$Ä”4D”ôåõ$ôd”ÄUõD‚"Â&ö÷Bò&Æ–6çBæ§6öâ"’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR…6–×ÆTæÖW76R†&÷CÖ&÷B’ÂW&ÂÐ¢6VÆbæ76W'D—2†'V–ÆFW"æ6ÆÅö&w2æ&w5³ÒÂ6÷W&6U÷f6æ7’Ð¢6VÆbæ76W'EG'VR€Ð¢&÷BæÖW76vW5²ÓÕ²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³Òæ6ÆÆ&6µöFFç7F'G7v—F‚‚&G6Ç“¢"Ð¢Ð Ð¢7–æ2FVbFW7Eö†—&–g•öF—&V7EöÆ–6F–öåööæUö'WGFöåöG'•÷'Vâ‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢òö†—&–g’æÖRö¦ö'2ós3#ƒ×—F†öâÖFWfVÆ÷W" Ð¢f6æ7’Òf6æ7’€Ð¢F—FÆSÒ%—F†öâFWfVÆ÷W""Â6ö×ç“Ò$$UD%’"ÀÐ¢FW67&—F–öãÒ%—F†öâ7–æ6–ò&6¶VæBÖ–7&÷6W'f–6W2&öÆR"¢RÂW&Ã×W&ÂÀÐ¢Ð¢vRÒ'6VD¦ö%vR‡f6æ7’Â'7G'V7GW&VEö¦ö%÷vR"Â""ÂW&ÂÐ¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&&6¶VæBçFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢F%÷F‚Ò&ö÷Bò&¦ö'2æF" Ð¢&÷BÒf¶T&÷B‚Ð¢6Æ–VçBÒf¶TF—&V7D†—&–g”6Æ–VçB‚Ð¢6Æ–VçBæÆ–VBæ6ÆV"‚Ð¢G&gBÒÆ–6F–öäG&gB‡f6æ7’Â&&6¶VæE÷—F†öâ"Â&W7VÖRÂ""Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…ö¦ö%ög&öÕöÖW76vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åövWEö†—&–g•ö6Æ–VçB"Â&WGW&å÷fÇVSÖ6Æ–VçB’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â&WGW&å÷fÇVSÖG&gB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR…6–×ÆTæÖW76R†&÷CÖ&÷B’ÂW&ÂÐ Ð¢'WGFöåöFFÒ&÷BæÖW76vW5²ÓÕ²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³Òæ6ÆÆ&6µöFFÐ¢6VÆbæ76W'EG'VR†'WGFöåöFFç7F'G7v—F‚‚&†—&–g–Ç“¢"’Ð¢VW'’Òf¶UVW'’†'WGFöåöFFÐ¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åövWEö†—&–g•ö6Æ–VçB"Â&WGW&å÷fÇVSÖ6Æ–VçB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢“ Ð¢v—B†æFÆUö6ÆÆ&6²…6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“×VW'’’Â6–×ÆTæÖW76R‚’Ð¢6VÆbæ76W'DWVÂ†6Æ–VçBæÆ–VBÂ³s3#ƒÒÐ¢6VÆbæ76W'D–â‚$Æ–VBF‡&÷Vv‚†—&–g’"ÂVW'’æVF—FVBÐ Ð¢7–æ2FVbFW7EöW‡FW&æÅöf÷&ÕööæUö'WGFöå÷7V&Ö—EöG'•÷'Vâ‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢ò÷wwræ¦ö'÷7F–ærç&òöV×Æö’Ó#cCSs‚Ó““’ Ð¢f6æ7’Òf6æ7’€Ð¢F—FÆSÒ%6Væ–÷"’Væv–æVW""Â6ö×ç“Ò$Æv÷FWVR"ÀÐ¢FW67&—F–öãÒ$’—F†öâÄÄÒVæv–æVW&–ær&öÆR"¢RÂW&Ã×W&ÂÀÐ¢Ð¢vRÒ'6VD¦ö%vR‡f6æ7’Â&Æ–6F–öåöf÷&Ò"ÂW&ÂÂW&ÂÐ¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&’çFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢F%÷F‚Ò&ö÷Bò&¦ö'2æF" Ð¢&öf–ÆU÷F‚Ò&ö÷Bò&Æ–6çBæ§6öâ Ð¢&öf–ÆU÷F‚çw&—FU÷FW‡B‚'·Ò"ÂVæ6öF–æsÒ'WFbÓ‚"Ð¢&÷BÒf¶T&÷B‚Ð¢G&gBÒÆ–6F–öäG&gB‡f6æ7’Â&ÖÅöVæv–æVW&–ær"Â&W7VÖRÂ""Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…ö¦ö%ög&öÕöÖW76vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ—5ö†—&–g•ö¦ö%÷W&Â"Â&WGW&å÷fÇVSÔfÇ6R’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â&WGW&å÷fÇVSÖG&gB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR…6–×ÆTæÖW76R†&÷CÖ&÷B’ÂW&ÂÐ Ð¢&Wf–WrÒ&÷BæÖW76vW5²ÓÐÐ¢'WGFöåöFFÒ&Wf–Wu²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³Òæ6ÆÆ&6µöFFÐ¢6VÆbæ76W'EG'VR†'WGFöåöFFç7F'G7v—F‚‚'vV&Ç“¢"’Ð¢VW'’Òf¶UVW'’†'WGFöåöFFÐ¢7V&Ö—BÒ7–æ4Öö6²‡&WGW&å÷fÇVSÒ&‡GG3¢ò÷wwræ¦ö'÷7F–ærç&òöÆ–6F–öâ÷7V66W72"Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2ç7V&Ö—EöÆ–6F–öâ"ÂæWs×7V&Ö—B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$Ä”4D”ôåõ$ôd”ÄUõD‚"Â&öf–ÆU÷F‚’ÀÐ¢“ Ð¢v—B†æFÆUö6ÆÆ&6²…6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“×VW'’’Â6–×ÆTæÖW76R‚’Ð¢7V&Ö—Bæ76W'Eöv—FVEööæ6U÷v—F‚‡W&ÂÂ&W7VÖRÂ&öf–ÆU÷F‚Â""Ð¢6VÆbæ76W'D–â‚$Æ–6F–öâ7V&Ö—GFVB"ÂVW'’æVF—FVBÐ Ð¢7–æ2FVbFW7Eö6†'•öGWÆ–6FUö6ÆÆ&6µ÷7V&Ö—G5ööæ6R‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢òö¦ö'2æ6†'–‡æ6öÒö6Æ—&ö&BöCsv####BÓ3vbÓC†#ÖVÖ#csS3““63 Ð¢f6æ7’Òf6æ7’€Ð¢F—FÆSÒ%FV6†æ–6Â7W÷'BVæv–æVW""ÀÐ¢6ö×ç“Ò$6Æ—&ö&B"ÀÐ¢FW67&—F–öãÒ%—F†öâ7W÷'BVæv–æVW&–ærG&÷V&ÆW6†ö÷F–ær&öÆR"¢RÀÐ¢W&Ã×W&ÂÀÐ¢Ð¢vRÒ'6VD¦ö%vR€Ð¢f6æ7’Â&6†'•öÆ–6F–öåöf÷&Ò"ÂW&Â²"öÆ–6F–öâ"ÂW&ÂÀÐ¢6öçF7Eö¶–æCÒ&G2"Â6öçF7E÷fÇVSÒ&6†'’"ÀÐ¢Ð¢&VfÆ–v‡BÒG5&VfÆ–v‡B‚&6†'’"ÂvRÂ‚’Âö&¦V7B‚’Ð¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&&6¶VæBçFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢&öf–ÆU÷F‚Ò&ö÷Bò&Æ–6çBæ§6öâ Ð¢&öf–ÆU÷F‚çw&—FU÷FW‡B‚'·Ò"ÂVæ6öF–æsÒ'WFbÓ‚"Ð¢F%÷F‚Ò&ö÷Bò&¦ö'2æF" Ð¢&÷BÒf¶T&÷B‚Ð¢G&gBÒÆ–6F–öäG&gB‡f6æ7’Â&&6¶VæE÷—F†öâ"Â&W7VÖRÂ""Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…öG5÷vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2ç&VfÆ–v‡EöG5öÆ–6F–öâ"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×&VfÆ–v‡B’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â&WGW&å÷fÇVSÖG&gB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$Ä”4D”ôåõ$ôd”ÄUõD‚"Â&öf–ÆU÷F‚’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR…6–×ÆTæÖW76R†&÷CÖ&÷B’ÂW&ÂÐ Ð¢'WGFöåöFFÒ&÷BæÖW76vW5²ÓÕ²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³Òæ6ÆÆ&6µöFFÐ¢6VÆbæ76W'EG'VR†'WGFöåöFFç7F'G7v—F‚‚&G6Ç“¢"’Ð¢7V&Ö—BÒ7–æ4Öö6²‡&WGW&å÷fÇVSÔG57V&Ö—76–öå&W7VÇB€Ð¢'7V&Ö—GFVB"ÂW&Â²"öÆ–6F–öâ÷7V66W72"Â&6öæf—&ÖVB Ð¢’Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2ç7V&Ö—EöG5öÆ–6F–öâ"ÂæWs×7V&Ö—B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$Ä”4D”ôåõ$ôd”ÄUõD‚"Â&öf–ÆU÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$4„%•ô%$õu4U%õ$ôd”ÄUõD‚"Â&ö÷Bò&'&÷w6W""’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$E5ô%$õu4U%ô„TDÄU52"ÂG'VR’À¢“ Ð¢f—'7BÒf¶UVW'’†'WGFöåöFFÐ¢v—B†æFÆUö6ÆÆ&6²…6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“Öf—'7B’Â6–×ÆTæÖW76R‚’Ð¢GWÆ–6FRÒf¶UVW'’†'WGFöåöFFÐ¢v—B†æFÆUö6ÆÆ&6²…6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“ÖGWÆ–6FR’Â6–×ÆTæÖW76R‚’Ð Ð¢7V&Ö—Bæ76W'Eöv—FVEööæ6R‚Ð¢6VÆbæ76W'D–â‚$Æ–6F–öâ7V&Ö—GFVB"Âf—'7BæVF—FVBÐ¢6VÆbæ76W'D–â‚&Ç&VG’6VæF–ær÷"6VçB"ÂGWÆ–6FRæVF—FVBÐ Ð¢7–æ2FVbFW7E÷FVÆVw&Õö6öçF7E÷&Wf–WuöæEööæUö'WGFöå÷6VæEöG'•÷'Vâ‡6VÆb“ Ð¢W&ÂÒ&‡GG3¢òö†—&–g’æÖRö¦ö'2ós3#rÖÆ–6F–öâÖ&6¶VæBÖVæv–æVW"×—F†öâ Ð¢f6æ7’Òf6æ7’€Ð¢F—FÆSÒ$Æ–6F–öâ&6¶VæBVæv–æVW"…—F†öâ’"ÀÐ¢6ö×ç“Ò#32"ÀÐ¢FW67&—F–öãÒ%—F†öâf7D’&6¶VæBVæv–æVW&–ær&öÆR"¢RÀÐ¢W&Ã×W&ÂÀÐ¢Ð¢vRÒ'6VD¦ö%vR‡f6æ7’Â'7G'V7GW&VEö¦ö%÷vR"Â""ÂW&ÂÐ Ð¢v—F‚FV×f–ÆRåFV×÷&'”F—&V7F÷'’‚’2F—&V7F÷'“ Ð¢&ö÷BÒF‚†F—&V7F÷'’Ð¢&W7VÖRÒ&ö÷Bò&&6¶VæBçFb Ð¢&W7VÖRçw&—FUö'—FW2†"'Fb"Ð¢F%÷F‚Ò&ö÷Bò&¦ö'2æF" Ð¢&÷BÒf¶T&÷B‚Ð¢7G‚Ò6–×ÆTæÖW76R†&÷CÖ&÷BÐ¢G&gBÒÆ–6F–öäG&gB‡f6æ7’Â&&6¶VæE÷—F†öâ"Â&W7VÖRÂ&öÆBvVæW&–2ÖW76vR"Ð Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æfWF6…ö¦ö%ög&öÕöÖW76vR"ÂæWsÔ7–æ4Öö6²‡&WGW&å÷fÇVS×vR’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åövWEö†—&–g•ö6Æ–VçB"Â&WGW&å÷fÇVSÔf¶T†—&–g”6Æ–VçB‚’’ÀÐ¢F6‚‚&¦ö&&÷Bæ†æFÆW'2æ'V–ÆEöÆ–6F–öåöf÷%÷f6æ7’"Â&WGW&å÷fÇVSÖG&gB’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢“ Ð¢v—Bö†æFÆU÷Fö¶Våög&VR†7G‚ÂW&ÂÐ Ð¢7VÖÖ'’Ò&÷BæÖW76vW5³Õ²'FW‡B%ÐÐ¢6VÆbæ76W'Dæ÷D–â‚$¦ö"”B"Â7VÖÖ'’Ð¢6VÆbæ76W'Dæ÷D–â‚%6÷W&6S¢"Â7VÖÖ'’Ð¢6VÆbæ76W'D–â‚$6öçF7C¢'FVÕög6–Wf–6‚"Â7VÖÖ'’Ð¢6VÆbæ76W'DWVÂ†ÆVâ†&÷BæFö7VÖVçG2’ÂÐ Ð¢&Wf–WrÒ&÷BæÖW76vW5³%ÐÐ¢6VÆbæ76W'D–â‚-	ý-]---=âÂ]í}2í-­½­Ý=-Íò"Â&Wf–Wu²'FW‡B%ÒÐ¢6VÆbæ76W'D–â‡W&ÂÂ&Wf–Wu²'FW‡B%ÒÐ¢6VÆbæ76W'Dæ÷D–â†br'·W&ÇÒ"rÂ&Wf–Wu²'FW‡B%ÒÐ¢'WGFöåöFFÒ&Wf–Wu²'&WÇ•öÖ&·W%Òæ–æÆ–æUö¶W–&ö&E³Õ³Òæ6ÆÆ&6µöFFÐ¢6VÆbæ76W'EG'VR†'WGFöåöFFç7F'G7v—F‚‚&Ç“¢"’Ð Ð¢VW'’Òf¶UVW'’†'WGFöåöFFÐ¢WFFRÒ6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“×VW'’Ð¢f¶U6VæFW"æ6ÆÇ2æ6ÆV"‚Ð¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åFVÆVw&Õ6VæFW""Âf¶U6VæFW"’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%$U5TÔUôD•""Â&ö÷B’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%DTÄTu$Õô•ô”B"Â’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ%DTÄTu$Õô•ô„4‚"Â&†6‚"’ÀÐ¢“ Ð¢v—B†æFÆUö6ÆÆ&6²‡WFFRÂ6–×ÆTæÖW76R‚’Ð Ð¢6VÆbæ76W'DWVÂ„f¶U6VæFW"æ6ÆÇ5³Õ³ÒÂ&'FVÕög6–Wf–6‚"Ð¢6VÆbæ76W'DWVÂ„f¶U6VæFW"æ6ÆÇ5³Õ³%ÒÂ&&6¶VæBçFb"Ð¢6VÆbæ76W'D–â‚-	ý-]---=âÂ]í}2í-­½­Ý=-Íò"Âf¶U6VæFW"æ6ÆÇ5³Õ³ÒÐ¢6VÆbæ76W'D–â‚%6VçBFò'FVÕög6–Wf–6‚"ÂVW'’æVF—FVBÐ Ð¢GWÆ–6FU÷VW'’Òf¶UVW'’†'WGFöåöFFÐ¢v—F‚€Ð¢F6‚‚&¦ö&&÷Bæ†æFÆW'2åFVÆVw&Õ6VæFW""Âf¶U6VæFW"’ÀÐ¢F6‚æö&¦V7B†6öæf–rÂ$¤ô%5ôD%õD‚"ÂF%÷F‚’ÀÐ¢“ Ð¢v—B†æFÆUö6ÆÆ&6²…6–×ÆTæÖW76R†6ÆÆ&6µ÷VW'“ÖGWÆ–6FU÷VW'’’Â6–×ÆTæÖW76R‚’Ð¢6VÆbæ76W'DWVÂ†ÆVâ„f¶U6VæFW"æ6ÆÇ2’ÂÐ¢6VÆbæ76W'D–â‚&Ç&VG’6VæF–ær÷"6VçB"ÂGWÆ–6FU÷VW'’æVF—FVBÐ Ð Ð¦–bõöæÖUõòÓÒ%õöÖ–åõò# Ð¢Væ—GFW7BæÖ–â‚Ð 

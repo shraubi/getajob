@@ -264,7 +264,7 @@ async def _handle_token_free(
             InlineKeyboardButton("Apply with resume", callback_data=f"webapply:{job_id[:24]}"),
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
-    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
+    preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message Ã¢â‚¬â€ resume only."
     await _notify(ctx, preview, reply_markup=confirmation)
     _review_event(
         interaction_id, "job_previewed", source_url=source_url,
@@ -323,7 +323,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH,
                 config.ASHBY_BROWSER_PROFILE_PATH,
-                headless=config.ASHBY_BROWSER_HEADLESS,
+                headless=config.ATS_BROWSER_HEADLESS,
             )
             if result.status == "submitted":
                 mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)

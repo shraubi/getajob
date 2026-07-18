@@ -13,6 +13,7 @@ from jobbot.integrations.ashby import (
     AshbySubmissionResult,
     _diagnostic_text,
     _diagnostic_url,
+    _recaptcha_requires_user,
     _resolve_submit_control,
     fetch_ashby_posting,
     preflight_ashby_application,
@@ -199,6 +200,18 @@ class AshbyTests(unittest.TestCase):
             ),
             CLIPBOARD_URL + "/application",
         )
+
+    def test_attached_recaptcha_requires_user_even_when_not_visible(self):
+        self.assertTrue(_recaptcha_requires_user(
+            control_present=True,
+            challenge_visible=False,
+            token_present=False,
+        ))
+        self.assertFalse(_recaptcha_requires_user(
+            control_present=True,
+            challenge_visible=False,
+            token_present=True,
+        ))
 
 
     def test_submit_control_is_re_resolved_by_semantic_name_not_live_index(self):

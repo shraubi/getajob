@@ -297,7 +297,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
                 patch.object(config, "ASHBY_BROWSER_PROFILE_PATH", root / "browser"),
-                patch.object(config, "ASHBY_BROWSER_HEADLESS", True),
+                patch.object(config, "ATS_BROWSER_HEADLESS", True),
             ):
                 first = FakeQuery(button_data)
                 await handle_callback(SimpleNamespace(callback_query=first), SimpleNamespace())
@@ -343,7 +343,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(bot.documents), 1)
 
             preview = bot.messages[2]
-            self.assertIn("Приветствую, хочу откликнуться", preview["text"])
+            self.assertIn("ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ", preview["text"])
             self.assertIn(url, preview["text"])
             self.assertNotIn(f'"{url}"', preview["text"])
             button_data = preview["reply_markup"].inline_keyboard[0][0].callback_data
@@ -363,7 +363,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(FakeSender.calls[0][0], "artem_avsievich")
             self.assertEqual(FakeSender.calls[0][2], "backend.pdf")
-            self.assertIn("Приветствую, хочу откликнуться", FakeSender.calls[0][1])
+            self.assertIn("ÐŸÑ€Ð¸Ð²ÐµÑ‚ÑÑ‚Ð²ÑƒÑŽ, Ñ…Ð¾Ñ‡Ñƒ Ð¾Ñ‚ÐºÐ»Ð¸ÐºÐ½ÑƒÑ‚ÑŒÑÑ", FakeSender.calls[0][1])
             self.assertIn("Sent to @artem_avsievich", query.edited)
 
             duplicate_query = FakeQuery(button_data)

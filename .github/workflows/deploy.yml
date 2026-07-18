@@ -27,7 +27,9 @@ jobs:
             cd ${{ secrets.APP_DIR }}
 
             cleanup() {
-              docker image prune -af || true
+              # Reclaim stopped containers, unused networks, and stale images.
+              # Named/bind-mounted application data is deliberately preserved.
+              docker system prune -af || true
               docker builder prune -af || true
               docker system df || true
             }
@@ -42,5 +44,8 @@ jobs:
             cleanup
 
             docker compose build --pull bot ralph
+            # PLAYWRIGHT_BROWSERS_PATH is persisted in /app/storage, so remove
+            # browser revisions left behind by previous Playwright releases.
+            docker compose run --rm --no-deps bot python -m playwright uninstall --all || true
             docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
             docker compose up -d bot ralph
