@@ -95,12 +95,17 @@ BrowserSubmitter = Callable[
 
 def is_ashby_job_url(url: str) -> bool:
     parsed = urlparse(url)
-    return parsed.hostname == _ASHBY_HOST and bool(_URL_RE.match(url.rstrip("/")))
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname == _ASHBY_HOST
+        and bool(_PATH_RE.match(parsed.path))
+    )
 
 
 def parse_ashby_url(url: str) -> tuple[str, str, str]:
-    match = _URL_RE.match(url.rstrip("/"))
-    if not match:
+    parsed = urlparse(url)
+    match = _PATH_RE.match(parsed.path)
+    if parsed.hostname != _ASHBY_HOST or not match:
         raise AshbyError("Unsupported Ashby URL; expected https://jobs.ashbyhq.com/<board>/<job-id>")
     board = match.group("board")
     job_id = match.group("job").lower()
