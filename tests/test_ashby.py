@@ -11,6 +11,8 @@ import httpx
 from jobbot.integrations.ashby import (
     AshbyError,
     AshbySubmissionResult,
+    _diagnostic_text,
+    _diagnostic_url,
     fetch_ashby_posting,
     preflight_ashby_application,
     submit_ashby_application,
@@ -176,6 +178,27 @@ class AshbyTests(unittest.TestCase):
         self.assertIn("authorized to work", missing)
         self.assertIn("clipboard_work_authorization", missing)
         self.assertIn("How did you hear", missing)
+
+
+    def test_submission_diagnostics_are_bounded_and_redacted(self):
+        diagnostic = _diagnostic_text(
+            "Email ada@example.com token=super-secret " + ("x" * 500),
+            limit=100,
+        )
+        self.assertIn("[email]", diagnostic)
+        self.assertIn("token=[redacted]", diagnostic)
+        self.assertNotIn("ada@example.com", diagnostic)
+        self.assertNotIn("super-secret", diagnostic)
+        self.assertLessEqual(len(diagnostic), 100)
+
+    def test_diagnostic_url_drops_query_and_fragment(self):
+        self.assertEqual(
+            _diagnostic_url(
+                CLIPBOARD_URL
+                + "/application?token=secret#private"
+            ),
+            CLIPBOARD_URL + "/application",
+        )
 
     def test_success_and_validation_failure_are_not_conflated(self):
         async def accepted(_preflight, _resume, _profile_dir, _headless):
