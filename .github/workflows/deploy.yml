@@ -47,9 +47,7 @@ jobs:
             # PLAYWRIGHT_BROWSERS_PATH is persisted in /app/storage, so remove
             # browser revisions left behind by previous Playwright releases.
             docker compose run --rm --no-deps bot python -m playwright uninstall --all || true
-            # ATS automation is headed under Xvfb, so it needs the full browser,
-            # not Playwright's headless-only shell.
-            docker compose run --rm --no-deps bot python -m playwright install chromium
+            docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
             if ! docker compose up -d --wait --wait-timeout 90 bot ralph; then
               echo "Bot failed its authenticated Telegram readiness check."
               docker compose ps || true
