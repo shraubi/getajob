@@ -20,6 +20,7 @@ ADDITIONAL_CHAT_IDS = {
 ALLOWED_CHAT_IDS = {YOUR_CHAT_ID} | ADDITIONAL_CHAT_IDS
 RESUME_DIR = Path(os.environ.get("RESUME_DIR", "data/resumes"))
 JOBS_DB_PATH = Path(os.environ.get("JOBS_DB_PATH", "storage/jobs.db"))
+BOT_READY_FILE = Path(os.environ.get("BOT_READY_FILE", "/tmp/jobbot-ready"))
 HIRIFY_EMAIL = os.environ.get("HIRIFY_EMAIL", "")
 HIRIFY_PASSWORD = os.environ.get("HIRIFY_PASSWORD", "")
 TELEGRAM_API_ID = int(os.environ.get("TELEGRAM_API_ID", "0"))
