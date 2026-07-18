@@ -35,3 +35,12 @@ docker compose exec -T bot python -m ralph.review_chat
 ```
 
 It reviews history in chronological chunks of 30 after the saved checkpoint or latest outgoing `Ralph-Run: <uuid>` marker. When more messages remain, run the same command again; no timestamp is needed. Without either boundary it reviews the most recent 30 messages. Reports include detected job links but never transcript text.
+
+## Continuous cloud Ralph review
+
+The `ralph` Compose service continuously reads Jobbot's structured operational journal from `storage/jobs.db`. It never logs into a Telegram user account and never sends messages. It writes findings to `storage/ralph.db` and `storage/ralph/reviews/`.
+
+    docker compose logs -f ralph
+    docker compose exec -T ralph python -m ralph.watch_events --once
+
+Every account using Jobbot must be listed in `YOUR_CHAT_ID` or `ADDITIONAL_CHAT_IDS`. Jobbot records normalized outcomes, links, classifications, preview/application availability, failures and throttles. It does not persist raw Telegram transcript or document contents.
