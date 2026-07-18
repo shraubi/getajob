@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -6,6 +7,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from jobbot import config
+from jobbot.classifier import score_directions
+from jobbot.review_events import record_review_event
 from jobbot.integrations.ashby import (
     AshbyError,
     fetch_ashby_posting,
@@ -31,6 +34,7 @@ from jobbot.application import (
     UnknownDirectionError,
     build_application,
     build_application_for_vacancy,
+    parse_vacancy,
     render_telegram_message,
 )
 from jobbot.integrations.telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError
@@ -57,7 +61,14 @@ async def _notify(ctx, text: str, **kwargs):
     await ctx.bot.send_message(chat_id=_target_chat_id(ctx), text=text, **kwargs)
 
 
-async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
+def _review_event(interaction_id: str, event_type: str, **data: object) -> None:
+    if interaction_id:
+        record_review_event(config.JOBS_DB_PATH, interaction_id, event_type, **data)
+
+async def _handle_token_free(
+    ctx, text: str, message_url: str = "", interaction_id: str = ""
+) -> None:
+    started = time.monotonic()
     parsed_page = None
     try:
         source_url = message_url or extract_first_url(text)
@@ -105,16 +116,34 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         except (JobPageError, HirifyError, AshbyError) as exc:
             logger.warning("Linked job processing failed: %s", exc)
             await _notify(ctx, f"Could not process the linked job: {exc}")
+            _review_event(
+                interaction_id, "job_fetch_failed", source_url=source_url,
+                blocker_type=type(exc).__name__,
+                expired=("404" in str(exc) or "no longer available" in str(exc).casefold()),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             return
 
     try:
         draft = build_application_for_vacancy(parsed_page.vacancy, config.RESUME_DIR) if parsed_page else build_application(text, config.RESUME_DIR)
     except UnknownDirectionError:
+        vacancy = parsed_page.vacancy if parsed_page else parse_vacancy(text)
         await _notify(ctx, "This role does not match any of the available resumes, so nothing will be sent.")
+        _review_event(
+            interaction_id, "role_rejected", source_url=source_url,
+            title=vacancy.title, scores=score_directions(vacancy.title, vacancy.description),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return
     except ResumeNotFoundError as exc:
         logger.warning("Token-free resume missing: %s", exc)
         await _notify(ctx, f"{exc}\nUpload PDF resumes to the VM resume directory.")
+        vacancy = parsed_page.vacancy if parsed_page else parse_vacancy(text)
+        _review_event(
+            interaction_id, "resume_missing", source_url=source_url,
+            title=vacancy.title, direction="unknown",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return
 
     if parsed_page and parsed_page.contact_kind == "telegram":
@@ -128,6 +157,11 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             )
         except AshbyError as exc:
             await _notify(ctx, f"Could not prepare the Ashby application: {exc}")
+            _review_event(
+                interaction_id, "application_failed", source_url=source_url,
+                blocker_type=type(exc).__name__,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             return
 
     job_id = save_fetched_job(
@@ -159,6 +193,11 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
             format_missing_questions(ashby_preflight)
             + "\nAdd these answers to applicant.json under \"answers\", then send the vacancy again.",
         )
+        _review_event(
+            interaction_id, "application_failed", source_url=source_url,
+            blocker_type="required_fields",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return
 
     confirmation = None
@@ -184,7 +223,13 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
         ]])
     preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
     await _notify(ctx, preview, reply_markup=confirmation)
-
+    _review_event(
+        interaction_id, "job_previewed", source_url=source_url,
+        job_id=job_id, title=draft.vacancy.title, direction=draft.direction,
+        resume_preview=True, application_path=confirmation is not None,
+        contact_kind=(parsed_page.contact_kind if parsed_page else ""),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
 
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -197,13 +242,20 @@ async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     if len(jd) < _MIN_JD_LENGTH:
         await _notify(ctx, f"Too short to be a job description ({len(jd)} chars). Paste the full JD.")
         return
-    await _handle_token_free(ctx, jd, telegram_message_url(msg))
+    await _handle_token_free(
+        ctx, jd, telegram_message_url(msg),
+        interaction_id=f"{msg.chat.id}:{msg.message_id}",
+    )
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data or ""
+    query_message = getattr(query, "message", None)
+    query_chat = getattr(getattr(query_message, "chat", None), "id", 0)
+    query_message_id = getattr(query_message, "message_id", 0)
+    interaction_id = f"callback:{query_chat}:{query_message_id}:{data.split(':', 1)[0]}"
     if data.startswith("applyskip:"):
         await query.edit_message_text("Application skipped.")
         return
@@ -212,6 +264,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
         if not job or job["contact_kind"] != "ashby":
             await query.edit_message_text("Saved Ashby application was not found.")
+            _review_event(interaction_id, "application_failed", blocker_type="missing_saved_job")
             return
         if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
             await query.edit_message_text("This application is already sending or sent.")
@@ -232,6 +285,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(
                     f"Application submitted through Ashby with {job['resume_name']}.\n{result.url}"
                 )
+                _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="ashby")
                 return
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
             record_send_attempt(
@@ -239,6 +293,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             await query.edit_message_text(
                 f"Ashby needs your help: {result.detail}\nFinish here: {result.url}"
+            )
+            _review_event(
+                interaction_id, "application_failed", source_url=job["page_url"],
+                blocker_type=result.status,
             )
             return
         except Exception as exc:
@@ -250,12 +308,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 f"Ashby application failed: {exc}\nFinish manually: {job['apply_url']}"
             )
+            _review_event(
+                interaction_id, "application_failed", source_url=job["page_url"],
+                blocker_type=type(exc).__name__,
+            )
             return
     if data.startswith("webapply:"):
         prefix = data.split(":", 1)[1]
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
         if not job or not job["apply_url"]:
             await query.edit_message_text("Saved web application was not found.")
+            _review_event(interaction_id, "application_failed", blocker_type="missing_saved_job")
             return
         if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
             await query.edit_message_text("This application is already sending or sent.")
@@ -270,14 +333,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
             logger.exception("Web application failed for job %s", job["id"])
             await query.edit_message_text(f"Application failed: {exc}")
+            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=type(exc).__name__)
             return
         await query.edit_message_text(f"Application submitted with {job['resume_name']}.\n{result_url}")
+        _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="web")
         return
     if data.startswith("hirifyapply:"):
         prefix = data.split(":", 1)[1]
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
         if not job or job["contact_kind"] != "hirify_direct":
             await query.edit_message_text("Saved Hirify application was not found.")
+            _review_event(interaction_id, "application_failed", blocker_type="missing_saved_job")
             return
         if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
             await query.edit_message_text("This application is already sending or sent.")
@@ -289,17 +355,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
             logger.exception("Hirify direct application failed for job %s", job["id"])
             await query.edit_message_text(f"Application failed: {exc}")
+            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=type(exc).__name__)
             return
         await query.edit_message_text(f"Applied through Hirify with {job['resume_name']} (application {external_id}).")
+        _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="hirify")
         return
     if data.startswith("apply:"):
         prefix = data.split(":", 1)[1]
         job = get_job_by_prefix(config.JOBS_DB_PATH, prefix)
         if not job or job["contact_kind"] != "telegram":
             await query.edit_message_text("Saved Telegram application not found.")
+            _review_event(interaction_id, "application_failed", blocker_type="missing_saved_job")
             return
         if not config.TELEGRAM_SENDING_ENABLED:
             await query.edit_message_text("Telegram sending is disabled; no message was sent.")
+            _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason="sending_disabled", queue_present=False)
             return
         claimed, retry_at, reason = claim_telegram_job_for_send(
             config.JOBS_DB_PATH,
@@ -315,6 +385,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(
                     f"Telegram send paused until {retry_at.astimezone(timezone.utc):%Y-%m-%d %H:%M UTC}: {reason}."
                 )
+                _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason=reason, queue_present=False)
             else:
                 await query.edit_message_text("This application is already sending or sent.")
             return
@@ -343,6 +414,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Telegram restricted outbound messages. Automatic sends are paused until "
                 f"{blocked_until:%Y-%m-%d %H:%M UTC}; this application was not sent."
             )
+            _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason="peer_flood", queue_present=False)
             return
         except Exception as exc:
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
@@ -351,9 +423,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             logger.exception("Telegram application send failed for job %s", job["id"])
             await query.edit_message_text(f"Send failed: {exc}")
+            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=type(exc).__name__)
             return
         await query.edit_message_text(
             f"Sent to @{job['contact_value'].lstrip('@')} with {job['resume_name']} (message {external_id})."
         )
+        _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="telegram")
         return
     await query.edit_message_text("Unknown action.")
