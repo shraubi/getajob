@@ -15,6 +15,8 @@ from bs4 import BeautifulSoup
 from jobbot.application import Vacancy
 from jobbot.integrations.form_matching import (
     best_field_label_match,
+    best_submit_control_match,
+    classify_form_submission,
     normalize_field_label,
 )
 from jobbot.integrations.job_page import ParsedJobPage, validate_public_url
@@ -577,34 +579,82 @@ async def _submit_with_playwright(
                         ) from exc
                     await option.first.click()
 
-            submit = page.get_by_role("button", name="Submit Application", exact=True)
-            if await submit.count() != 1:
-                raise AshbyError("Ashby submit button was not found")
-            await submit.click()
+            submit_controls = page.locator(
+                'button:visible, input[type="submit"]:visible, [role="button"]:visible'
+            )
+            submit_labels = await submit_controls.evaluate_all(
+                """(elements) => elements.map((element) => (
+                    element.innerText ||
+                    element.value ||
+                    element.getAttribute("aria-label") ||
+                    element.getAttribute("title") ||
+                    ""
+                ).trim())"""
+            )
+            submit_index = best_submit_control_match(submit_labels)
+            if submit_index is None:
+                raise AshbyError(
+                    "Could not identify a unique submit control "
+                    f"(visible controls={submit_labels})"
+                )
+            await submit_controls.nth(submit_index).click()
 
-            for _ in range(40):
+            for _ in range(60):
                 await page.wait_for_timeout(500)
-                body = (await page.locator("body").inner_text()).casefold()
-                if any(marker in body for marker in (
-                    "application submitted", "thank you for applying", "application received"
-                )):
-                    return AshbySubmissionResult("submitted", page.url, "Ashby confirmation page")
-                challenge = page.locator('iframe[title*="challenge" i], iframe[src*="/bframe"]')
-                if await challenge.count() > 0 and await challenge.first.is_visible():
+
+                success_regions = page.locator(
+                    ".ashby-application-form-success-container"
+                )
+                success_visible = False
+                success_messages: list[str] = []
+                for index in range(await success_regions.count()):
+                    region = success_regions.nth(index)
+                    if await region.is_visible():
+                        success_visible = True
+                        text = (await region.inner_text()).strip()
+                        if text:
+                            success_messages.append(text)
+
+                failure_regions = page.locator(
+                    '.ashby-application-form-failure-container, [role="alert"]'
+                )
+                failure_visible = False
+                failure_messages: list[str] = []
+                for index in range(await failure_regions.count()):
+                    region = failure_regions.nth(index)
+                    if await region.is_visible():
+                        text = (await region.inner_text()).strip()
+                        if text:
+                            failure_visible = True
+                            failure_messages.append(text)
+
+                challenge = page.locator(
+                    'iframe[title*="challenge" i], iframe[src*="/bframe"]'
+                )
+                challenge_visible = False
+                for index in range(await challenge.count()):
+                    if await challenge.nth(index).is_visible():
+                        challenge_visible = True
+                        break
+
+                outcome = classify_form_submission(
+                    success_present=success_visible,
+                    success_text="; ".join(success_messages)[:1000],
+                    failure_present=failure_visible,
+                    failure_text="; ".join(failure_messages)[:1000],
+                    challenge_present=challenge_visible,
+                    challenge_text="Interactive verification is required",
+                )
+                if outcome is not None:
                     return AshbySubmissionResult(
-                        "manual_required",
-                        preflight.posting.page.apply_url,
-                        "Ashby requested an interactive reCAPTCHA challenge",
+                        outcome.status,
+                        page.url,
+                        outcome.detail,
                     )
-                alerts = page.locator('[role="alert"]')
-                if await alerts.count() > 0:
-                    messages = [text.strip() for text in await alerts.all_inner_texts() if text.strip()]
-                    if messages:
-                        return AshbySubmissionResult("failed", page.url, "; ".join(messages)[:1000])
             return AshbySubmissionResult(
                 "manual_required",
-                preflight.posting.page.apply_url,
-                "Ashby did not return a verifiable success confirmation",
+                page.url,
+                "The form did not expose a verifiable submission outcome",
             )
         finally:
             await context.close()
