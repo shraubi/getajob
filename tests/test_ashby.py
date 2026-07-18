@@ -64,9 +64,9 @@ class AshbyTests(unittest.TestCase):
                         "first_name": "Ada",
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
-                        "location": {"country": "France", "city": "Paris"},
+                        "location": {"country": "Exampleland", "city": "Paris"},
                         "facts": {
-                            "work_authorized_countries": ["France"],
+                            "work_authorized_countries": ["Exampleland"],
                             "previous_employers": [],
                             "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
@@ -125,9 +125,9 @@ class AshbyTests(unittest.TestCase):
                 "first_name": "Ada",
                 "last_name": "Lovelace",
                 "email": "ada@example.com",
-                "location": {"country": "France"},
+                "location": {"country": "Exampleland"},
                 "facts": {
-                    "work_authorized_countries": ["France"],
+                    "work_authorized_countries": ["Exampleland"],
                     "previous_employers": [],
                     "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                 }
@@ -199,9 +199,9 @@ class AshbyTests(unittest.TestCase):
                         "first_name": "Ada",
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
-                        "location": {"country": "France"},
+                        "location": {"country": "Exampleland"},
                         "facts": {
-                            "work_authorized_countries": ["France"],
+                            "work_authorized_countries": ["Exampleland"],
                             "previous_employers": [],
                             "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
