@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from jobbot.application import Vacancy
 
 _URL_RE = re.compile(r"https?://[^\s<>\]]+")
+_SCRIPT_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.I)
 _ACTION_RE = re.compile(
     r"\b(apply|application|submit|contact|email|send\s+(?:cv|resume)|"
     r"\u043e\u0442\u043a\u043b\u0438\u043a|\u043e\u0442\u043a\u043b\u0438\u043a\u043d\u0443\u0442\u044c\u0441\u044f|"
@@ -135,6 +136,37 @@ def _plain_text(value) -> str:
     return BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
 
 
+def _navigation_target(element, base_url: str) -> str:
+    """Return a safe navigable/contact target exposed by a DOM element.
+
+    Modern career pages often render an inert ``javascript:`` href while the
+    real destination lives in a data attribute or a small click handler. This
+    extracts only HTTP(S) navigation and explicit contact schemes; arbitrary
+    script contents are never executed.
+    """
+    for attribute in (
+        "href",
+        "formaction",
+        "data-href",
+        "data-url",
+        "data-apply-url",
+        "data-application-url",
+        "data-target-url",
+    ):
+        raw = str(element.get(attribute, "")).strip()
+        if not raw or raw.startswith("#"):
+            continue
+        parsed = urlparse(raw)
+        if parsed.scheme.casefold() in {"http", "https", "mailto", "tel"}:
+            return urljoin(base_url, raw)
+        if not parsed.scheme:
+            return urljoin(base_url, raw)
+
+    script = str(element.get("onclick", ""))
+    match = _SCRIPT_URL_RE.search(script)
+    return match.group(0) if match else ""
+
+
 def _application_target(soup: BeautifulSoup, base_url: str) -> tuple[str, bool]:
     for form in soup.find_all("form"):
         searchable = " ".join((form.get("action", ""), form.get_text(" ", strip=True)))
@@ -144,11 +176,12 @@ def _application_target(soup: BeautifulSoup, base_url: str) -> tuple[str, bool]:
     ranked: list[tuple[int, str]] = []
     contact_target = ""
     for anchor in soup.find_all("a", href=True):
-        href = urljoin(base_url, anchor["href"])
-        if href.casefold().startswith("mailto:") and not contact_target:
+        href = _navigation_target(anchor, base_url)
+        scheme = urlparse(href).scheme.casefold()
+        if scheme in {"mailto", "tel"} and not contact_target:
             contact_target = href
         label = " ".join((anchor.get_text(" ", strip=True), anchor.get("aria-label", ""), anchor.get("title", ""), anchor["href"]))
-        if _ACTION_RE.search(label):
+        if scheme in {"http", "https"} and _ACTION_RE.search(label):
             score = 2 if _ACTION_RE.search(anchor.get_text(" ", strip=True)) else 1
             ranked.append((score, href))
     if ranked:
@@ -166,7 +199,7 @@ def _application_target(soup: BeautifulSoup, base_url: str) -> tuple[str, bool]:
             str(button.get("title", "")),
         ))
         if _ACTION_RE.search(label):
-            return base_url, False
+            return _navigation_target(button, base_url) or base_url, False
     return "", False
 
 
@@ -214,6 +247,8 @@ async def resolve_application_url(
     seen: set[str] = set()
     last = url
     for _ in range(max_hops):
+        if urlparse(current).scheme.casefold() in {"mailto", "tel"}:
+            return current
         if current in seen:
             break
         seen.add(current)

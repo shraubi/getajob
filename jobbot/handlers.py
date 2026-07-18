@@ -323,7 +323,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH,
                 config.ASHBY_BROWSER_PROFILE_PATH,
-                headless=config.ASHBY_BROWSER_HEADLESS,
+                headless=config.ATS_BROWSER_HEADLESS,
             )
             if result.status == "submitted":
                 mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)

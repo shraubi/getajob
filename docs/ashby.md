@@ -46,7 +46,17 @@ The bot does not generate, copy, replay, solve, or bypass CAPTCHA tokens. If Ash
 3. reports the exact blocker in Telegram;
 4. returns the canonical `/application` URL for manual completion.
 
-Set `ASHBY_BROWSER_HEADLESS=false` only where an operator can access the browser display. The persistent browser profile is stored under `ASHBY_BROWSER_PROFILE_PATH`; treat it as private runtime state and never commit or copy it casually. A Google account is not required and credentials must not be placed in `.env` or `applicant.json`.
+The production container runs ATS automation in headed Chromium on a private
+Xvfb virtual display (`ATS_BROWSER_HEADLESS=false`). This lets Ashby's invisible
+reCAPTCHA issue a token as it does in a normal browser; it does not bypass an
+interactive challenge. If an interactive challenge is presented, the bot hands
+the application back for manual completion. `ASHBY_BROWSER_HEADLESS` remains a
+compatibility fallback for existing installations.
+
+The persistent browser profile is stored under `ASHBY_BROWSER_PROFILE_PATH`;
+treat it as private runtime state and never commit or copy it casually. A Google
+account is not required and credentials must not be placed in `.env` or
+`applicant.json`.
 
 ## Limits
 

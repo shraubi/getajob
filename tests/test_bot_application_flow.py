@@ -297,7 +297,7 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "APPLICATION_PROFILE_PATH", profile_path),
                 patch.object(config, "ASHBY_BROWSER_PROFILE_PATH", root / "browser"),
-                patch.object(config, "ASHBY_BROWSER_HEADLESS", True),
+                patch.object(config, "ATS_BROWSER_HEADLESS", True),
             ):
                 first = FakeQuery(button_data)
                 await handle_callback(SimpleNamespace(callback_query=first), SimpleNamespace())

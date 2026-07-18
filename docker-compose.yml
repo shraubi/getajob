@@ -9,9 +9,15 @@ services:
       RESUME_DIR: /app/data/resumes
       JOBS_DB_PATH: /app/storage/jobs.db
       PLAYWRIGHT_BROWSERS_PATH: /app/storage/playwright
+      ATS_BROWSER_HEADLESS: "false"
     volumes:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}
   ralph:
     build:
       context: .
@@ -28,3 +34,8 @@ services:
       - ${DATA_DIR:-./storage}:/app/storage
     depends_on:
       - bot
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}

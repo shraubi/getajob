@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
@@ -34,6 +35,10 @@ _DIAGNOSTIC_EMAIL_RE = re.compile(
 _DIAGNOSTIC_SECRET_RE = re.compile(
     r"(?i)\b(authorization|cookie|password|secret|token)\s*[:=]\s*\S+"
 )
+_RECAPTCHA_IFRAME_SELECTOR = (
+    'iframe[title*="recaptcha" i], iframe[title*="challenge" i], '
+    'iframe[src*="/anchor"], iframe[src*="/bframe"]'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +64,19 @@ def _append_diagnostic(events: list[str], value: object) -> None:
     if event:
         events.append(event)
         del events[:-20]
+
+
+def _recaptcha_requires_user(
+    *,
+    control_present: bool,
+    challenge_visible: bool,
+    token_present: bool,
+) -> bool:
+    """Return whether Ashby's reCAPTCHA gate still needs human input."""
+    return (
+        (control_present or challenge_visible)
+        and not token_present
+    )
 
 
 _FIELD_CONTAINER_XPATH = (
@@ -282,6 +300,14 @@ def _normalized(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
 
 
+def next_working_day(today: date | None = None) -> date:
+    """Return the next Monday-Friday date after ``today``."""
+    candidate = (today or date.today()) + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 def _facts(raw: dict) -> dict:
     return raw.get("facts") if isinstance(raw.get("facts"), dict) else {}
 
@@ -351,6 +377,24 @@ def _semantic_value(field: AshbyField, raw: dict, posting: AshbyPosting):
     ))
     if source_question:
         return _matching_option(field, facts.get("application_source_preferences"))
+
+    availability_question = any(phrase in title for phrase in (
+        "available to start",
+        "availability to start",
+        "when can you start",
+        "notice period",
+        "earliest start date",
+    ))
+    if availability_question:
+        configured_availability = facts.get(
+            "start_availability", "next_working_day"
+        )
+        availability = _normalized(configured_availability)
+        if availability in {"asap", "next working day", "next weekday"}:
+            start = next_working_day()
+            return f"Available to start on {start.strftime('%A, %B %d, %Y')}."
+        if str(configured_availability).strip():
+            return str(configured_availability).strip()
 
     return None
 
@@ -712,7 +756,11 @@ async def _submit_with_playwright(
             )
 
             last_snapshot = ""
-            for attempt in range(60):
+            # A visible browser can remain open while the applicant solves an
+            # interactive reCAPTCHA. Headless runs fail fast with an actionable
+            # handoff instead of waiting on a token that cannot be supplied.
+            wait_seconds = 300 if not headless else 30
+            for attempt in range(wait_seconds * 2):
                 await page.wait_for_timeout(500)
 
                 success_regions = page.locator(
@@ -741,22 +789,45 @@ async def _submit_with_playwright(
                             failure_visible = True
                             failure_messages.append(text)
 
-                challenge = page.locator(
-                    'iframe[title*="challenge" i], iframe[src*="/bframe"]'
-                )
+                challenge = page.locator(_RECAPTCHA_IFRAME_SELECTOR)
                 challenge_visible = False
                 for index in range(await challenge.count()):
                     if await challenge.nth(index).is_visible():
                         challenge_visible = True
                         break
 
+                recaptcha_response = page.locator(
+                    'textarea[name="g-recaptcha-response"]'
+                )
+                recaptcha_control_present = (
+                    await recaptcha_response.count() > 0
+                )
+                recaptcha_token_present = False
+                if recaptcha_control_present:
+                    recaptcha_token_present = await recaptcha_response.first.evaluate(
+                        "(element) => Boolean(element.value)"
+                    )
+                challenge_requires_user = _recaptcha_requires_user(
+                    control_present=recaptcha_control_present,
+                    challenge_visible=challenge_visible,
+                    token_present=recaptcha_token_present,
+                )
+                if challenge_requires_user and not headless and attempt == 0:
+                    logger.warning(
+                        "Ashby reCAPTCHA requires user interaction; waiting in "
+                        "the visible browser for up to five minutes"
+                    )
+
                 outcome = classify_form_submission(
                     success_present=success_visible,
                     success_text="; ".join(success_messages)[:1000],
                     failure_present=failure_visible,
                     failure_text="; ".join(failure_messages)[:1000],
-                    challenge_present=challenge_visible,
-                    challenge_text="Interactive verification is required",
+                    challenge_present=challenge_requires_user and headless,
+                    challenge_text=(
+                        "Ashby reCAPTCHA requires a visible browser and user "
+                        "interaction"
+                    ),
                 )
 
                 invalid_controls = page.locator(
@@ -819,6 +890,8 @@ async def _submit_with_playwright(
                         "success_visible": success_visible,
                         "failure_messages": failure_messages,
                         "challenge_visible": challenge_visible,
+                        "recaptcha_control_present": recaptcha_control_present,
+                        "recaptcha_token_present": recaptcha_token_present,
                         "invalid_controls": invalid_details,
                         "live_regions": live_texts,
                         "headings": heading_texts,
@@ -862,7 +935,8 @@ async def _submit_with_playwright(
                 limit=2600,
             )
             logger.warning(
-                "Ashby submission outcome remained pending after 30s: %s",
+                "Ashby submission outcome remained pending after %ds: %s",
+                wait_seconds,
                 diagnostic_summary,
             )
             return AshbySubmissionResult(

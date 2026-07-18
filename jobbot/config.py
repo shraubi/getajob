@@ -32,4 +32,10 @@ TELEGRAM_SEND_MAX_PER_HOUR = int(os.environ.get("TELEGRAM_SEND_MAX_PER_HOUR", "3
 TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS = int(os.environ.get("TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS", "24"))
 APPLICATION_PROFILE_PATH = Path(os.environ.get("APPLICATION_PROFILE_PATH", "storage/applicant.json"))
 ASHBY_BROWSER_PROFILE_PATH = Path(os.environ.get("ASHBY_BROWSER_PROFILE_PATH", "storage/ashby-browser"))
-ASHBY_BROWSER_HEADLESS = _bool_env("ASHBY_BROWSER_HEADLESS", True)
+ATS_BROWSER_HEADLESS = _bool_env(
+    "ATS_BROWSER_HEADLESS",
+    _bool_env("ASHBY_BROWSER_HEADLESS", True),
+)
+# Compatibility for existing installations; new provider-neutral code should
+# use ATS_BROWSER_HEADLESS.
+ASHBY_BROWSER_HEADLESS = ATS_BROWSER_HEADLESS
