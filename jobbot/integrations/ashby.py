@@ -279,7 +279,8 @@ def _semantic_value(field: AshbyField, raw: dict, posting: AshbyPosting):
         if not isinstance(authorized, list) or not country:
             return None
         authorized_names = {_normalized(item) for item in authorized}
-        return "*" in authorized_names or _normalized(country) in authorized_names
+        any_country = any(str(item).strip() == "*" or _normalized(item) == "any" for item in authorized)
+        return any_country or _normalized(country) in authorized_names
 
     previous_employer_question = any(phrase in title for phrase in (
         "worked for",
