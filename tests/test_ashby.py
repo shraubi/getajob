@@ -20,8 +20,11 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ashby_clipboard_job.json"
 CLIPBOARD_URL = "https://jobs.ashbyhq.com/clipboard/d77b2224-307f-48b1-a0ea-ab67153993c0"
 
 
-def fixture_transport():
-    payload = FIXTURE_PATH.read_text(encoding="utf-8")
+def fixture_transport(payload=None):
+    if payload is None:
+        payload = FIXTURE_PATH.read_text(encoding="utf-8")
+    elif not isinstance(payload, str):
+        payload = json.dumps(payload)
 
     def handler(request):
         if request.method != "POST":
@@ -61,11 +64,11 @@ class AshbyTests(unittest.TestCase):
                         "first_name": "Ada",
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
-                        "location": {"country": "France", "city": "Paris"},
-                        "answers": {
-                            "clipboard_work_authorization": True,
-                            "clipboard_previously_worked": False,
-                            "clipboard_source": "LinkedIn"
+                        "location": {"country": "Exampleland", "city": "Paris"},
+                        "facts": {
+                            "work_authorized_countries": ["Exampleland"],
+                            "previous_employers": [],
+                            "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
                     }
                 ),
@@ -86,7 +89,60 @@ class AshbyTests(unittest.TestCase):
         self.assertEqual(preflight.missing, ())
         self.assertEqual(preflight.submissions["_systemfield_name"], "Ada Lovelace")
         self.assertEqual(preflight.submissions["_systemfield_resume"], "__resume__")
+        self.assertEqual(preflight.submissions["clipboard_work_authorization"], True)
         self.assertEqual(preflight.submissions["clipboard_previously_worked"], False)
+        self.assertEqual(preflight.submissions["clipboard_source"], "LinkedIn")
+
+    def test_semantic_facts_survive_different_question_ids_and_wording(self):
+        payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        entries = payload["data"]["jobPosting"]["applicationForm"]["sections"][0]["fieldEntries"]
+        replacements = {
+            "clipboard_service_country": ("new-location-id", "Where will you be working from?"),
+            "clipboard_work_authorization": (
+                "new-authorization-id",
+                "Do you have the legal right to work in your current country?"
+            ),
+            "clipboard_previously_worked": (
+                "new-employment-id",
+                "Were you previously employed by Clipboard?"
+            ),
+            "clipboard_source": (
+                "new-source-id",
+                "Where did you hear about this opportunity?"
+            ),
+        }
+        for entry in entries:
+            path = entry["field"]["path"]
+            if path in replacements:
+                entry["field"]["path"], entry["field"]["title"] = replacements[path]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "resume.pdf"
+            resume.write_bytes(b"pdf")
+            profile = root / "applicant.json"
+            profile.write_text(json.dumps({
+                "first_name": "Ada",
+                "last_name": "Lovelace",
+                "email": "ada@example.com",
+                "location": {"country": "Exampleland"},
+                "facts": {
+                    "work_authorized_countries": ["Exampleland"],
+                    "previous_employers": [],
+                    "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
+                }
+            }), encoding="utf-8")
+            with (
+                patch("jobbot.integrations.ashby.validate_public_url", new=AsyncMock()),
+                patch("jobbot.integrations.web_application.extract_resume_text", return_value=""),
+            ):
+                preflight = asyncio.run(preflight_ashby_application(
+                    CLIPBOARD_URL, resume, profile, transport=fixture_transport(payload)
+                ))
+        self.assertEqual(preflight.missing, ())
+        self.assertEqual(preflight.submissions["new-authorization-id"], True)
+        self.assertEqual(preflight.submissions["new-employment-id"], False)
+        self.assertEqual(preflight.submissions["new-source-id"], "LinkedIn")
 
     def test_preflight_returns_actionable_missing_questions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -143,11 +199,11 @@ class AshbyTests(unittest.TestCase):
                         "first_name": "Ada",
                         "last_name": "Lovelace",
                         "email": "ada@example.com",
-                        "location": {"country": "France"},
-                        "answers": {
-                            "clipboard_work_authorization": True,
-                            "clipboard_previously_worked": False,
-                            "clipboard_source": "LinkedIn"
+                        "location": {"country": "Exampleland"},
+                        "facts": {
+                            "work_authorized_countries": ["Exampleland"],
+                            "previous_employers": [],
+                            "application_source_preferences": ["LinkedIn", "Indeed", "Other"]
                         }
                     }
                 ),
