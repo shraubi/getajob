@@ -18,8 +18,8 @@ from jobbot.integrations.web_application import load_profile
 
 _GRAPHQL_URL = "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobPosting"
 _ASHBY_HOST = "jobs.ashbyhq.com"
-_URL_RE = re.compile(
-    r"^https://jobs\.ashbyhq\.com/(?P<board>[^/?#]+)/(?P<job>[0-9a-fA-F-]{36})(?:/application)?/?$"
+_PATH_RE = re.compile(
+    r"^/(?P<board>[^/?#]+)/(?P<job>[0-9a-fA-F-]{36})(?:/application)?/?$"
 )
 _JOB_QUERY = """
 query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
