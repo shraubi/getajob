@@ -72,6 +72,9 @@ async def _handle_token_free(ctx, text: str, message_url: str = "") -> None:
                 parsed_page = ashby_posting.page
             else:
                 parsed_page = await fetch_job_from_message(source_url)
+                if is_ashby_job_url(parsed_page.fetched_url):
+                    ashby_posting = await fetch_ashby_posting(parsed_page.fetched_url)
+                    parsed_page = ashby_posting.page
             if is_hirify_job_url(parsed_page.fetched_url):
                 contact = await _get_hirify_client().get_contact(parsed_page.fetched_url)
                 if contact:
