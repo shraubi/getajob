@@ -425,47 +425,58 @@ async def _submit_with_playwright(
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(preflight.posting.page.apply_url, wait_until="domcontentloaded", timeout=30_000)
             try:
-                await page.wait_for_selector(
-                    '[data-field-path="_systemfield_name"], [name="_systemfield_name"]',
+                await page.locator(".ashby-application-form-field-entry").first.wait_for(
                     state="visible",
                     timeout=20_000,
                 )
             except PlaywrightTimeoutError as exc:
-                input_names = await page.locator("input[name], textarea[name], select[name]").evaluate_all(
-                    "(elements) => elements.map((element) => element.name).filter(Boolean)"
-                )
                 raise AshbyError(
                     "Ashby application form did not render within 20 seconds "
-                    f"(url={page.url}, title={await page.title()!r}, "
-                    f"visible field names={input_names[:20]})"
+                    f"(url={page.url}, title={await page.title()!r})"
                 ) from exc
 
             for field in preflight.posting.fields:
                 if field.path not in preflight.submissions:
                     continue
                 value = preflight.submissions[field.path]
-                selector = f'[name={json.dumps(field.path)}]:visible'
-                container_selector = f'[data-field-path={json.dumps(field.path)}]:visible'
-                control = page.locator(selector)
-                container = page.locator(container_selector)
 
-                # Ashby's stable contract is the field path (name/id/data-field-path).
-                # Labels are presentation text and are not consistently exposed to
-                # Playwright's accessibility lookup.
-                if await control.count() == 0:
-                    control = page.get_by_label(field.title, exact=True)
+                # Match the human-visible question first. Ashby's DOM names are not
+                # its API paths: custom fields may be prefixed and controls such as
+                # location autocomplete may have no matching name at all.
+                question = page.locator(
+                    ".ashby-application-form-question-title"
+                ).filter(
+                    has_text=re.compile(rf"^\\s*{re.escape(field.title)}\\s*$", re.IGNORECASE)
+                )
+                container = question.locator(
+                    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                    "' ashby-application-form-field-entry ')][1]"
+                )
                 if await container.count() == 0:
-                    title = page.get_by_text(field.title, exact=True)
-                    if await title.count() == 1:
-                        container = title.locator("xpath=..")
+                    exact_name = f'[name={json.dumps(field.path)}]'
+                    suffix_name = f'[name$={json.dumps(field.path)}]'
+                    control = page.locator(f"{exact_name}, {suffix_name}")
+                    if await control.count() > 0:
+                        container = control.first.locator(
+                            "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                            "' ashby-application-form-field-entry ')][1]"
+                        )
+
+                if await container.count() == 0:
+                    visible_titles = await page.locator(
+                        ".ashby-application-form-question-title"
+                    ).all_inner_texts()
+                    raise AshbyError(
+                        f"Could not locate Ashby question: {field.title} "
+                        f"(visible questions={visible_titles})"
+                    )
+                container = container.first
 
                 if value == "__resume__":
-                    upload = control.locator('input[type="file"]') if await control.count() else control
-                    if await upload.count() == 0 and await container.count() == 1:
-                        upload = container.locator('input[type="file"]')
-                    if await upload.count() != 1:
-                        raise AshbyError(f"Could not locate Ashby field: {field.title}")
-                    await upload.set_input_files(str(resume_path))
+                    upload = container.locator('input[type="file"]')
+                    if await upload.count() == 0:
+                        raise AshbyError(f"Could not locate upload control for: {field.title}")
+                    await upload.first.set_input_files(str(resume_path))
                     continue
 
                 answer = (
@@ -473,47 +484,46 @@ async def _submit_with_playwright(
                     else "No" if value is False
                     else str(value)
                 )
-                native_select = control.locator("select") if await control.count() == 1 else control
-                if await control.count() == 1:
-                    tag_name = await control.evaluate(
-                        "(element) => element.tagName.toLowerCase()"
-                    )
-                    if tag_name == "select":
-                        native_select = control
-                if await native_select.count() == 1:
+                native_select = container.locator("select:visible")
+                if await native_select.count() > 0:
                     if field.field_type == "MultiValueSelect":
-                        await native_select.select_option([str(item) for item in value])
+                        await native_select.first.select_option([str(item) for item in value])
                     else:
-                        await native_select.select_option(
+                        await native_select.first.select_option(
                             "true" if value is True else "false" if value is False else str(value)
                         )
                     continue
 
                 if field.field_type in {"Boolean", "ValueSelect", "MultiValueSelect"}:
-                    if await container.count() != 1:
-                        raise AshbyError(f"Could not locate Ashby field: {field.title}")
-                    option = container.get_by_label(answer, exact=True)
-                    if await option.count() != 1:
-                        option = container.get_by_role("button", name=answer, exact=True)
-                    if await option.count() != 1:
-                        option = container.get_by_text(answer, exact=True)
-                    if await option.count() != 1:
-                        raise AshbyError(f"Could not select Ashby answer for: {field.title}")
-                    await option.click()
+                    answers = value if isinstance(value, list) else [value]
+                    for item in answers:
+                        item_text = (
+                            "Yes" if item is True
+                            else "No" if item is False
+                            else str(item)
+                        )
+                        option = container.get_by_label(item_text, exact=True)
+                        if await option.count() == 0:
+                            option = container.get_by_role("button", name=item_text, exact=True)
+                        if await option.count() == 0:
+                            option = container.get_by_text(item_text, exact=True)
+                        if await option.count() == 0:
+                            raise AshbyError(
+                                f"Could not select Ashby answer {item_text!r} for: {field.title}"
+                            )
+                        await option.first.click()
                     continue
 
+                control = container.locator(
+                    'input:not([type="radio"]):not([type="checkbox"]):visible, '
+                    "textarea:visible, [role=\"combobox\"]:visible"
+                )
                 if await control.count() == 0:
-                    field_names = await page.locator("input[name], textarea[name], select[name]").evaluate_all(
-                        "(elements) => elements.map((element) => element.name).filter(Boolean)"
-                    )
-                    raise AshbyError(
-                        f"Could not locate Ashby field: {field.title} [{field.path}] "
-                        f"(url={page.url}, visible field names={field_names[:20]})"
-                    )
+                    raise AshbyError(f"Could not locate input control for: {field.title}")
                 control = control.first
                 if isinstance(value, dict):
-                    if field.path == "_systemfield_location":
-                        text_value = str(value.get("country") or value.get("city") or "").strip()
+                    if "country" in _normalized(field.title):
+                        text_value = str(value.get("country") or "").strip()
                     else:
                         text_value = ", ".join(
                             str(value.get(key)).strip()
@@ -523,11 +533,16 @@ async def _submit_with_playwright(
                 else:
                     text_value = str(value)
                 await control.fill(text_value)
+
                 if field.field_type == "Location":
-                    await page.wait_for_timeout(300)
                     option = page.get_by_role("option", name=text_value, exact=True)
-                    if await option.count() == 1:
-                        await option.click()
+                    try:
+                        await option.first.wait_for(state="visible", timeout=5_000)
+                    except PlaywrightTimeoutError as exc:
+                        raise AshbyError(
+                            f"Ashby location option did not appear for: {text_value}"
+                        ) from exc
+                    await option.first.click()
 
             submit = page.get_by_role("button", name="Submit Application", exact=True)
             if await submit.count() != 1:
