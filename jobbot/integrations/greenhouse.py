@@ -18,7 +18,7 @@ from jobbot.integrations.job_page import ParsedJobPage, validate_public_url
 from jobbot.integrations.web_application import load_profile
 
 _API = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?questions=true"
-_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io"}
+_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io", "job-boards.eu.greenhouse.io"}
 
 
 class GreenhouseError(RuntimeError):
