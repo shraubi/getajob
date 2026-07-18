@@ -10,7 +10,7 @@ services:
       JOBS_DB_PATH: /app/storage/jobs.db
       BOT_READY_FILE: /tmp/jobbot-ready
       PLAYWRIGHT_BROWSERS_PATH: /app/storage/playwright
-      ATS_BROWSER_HEADLESS: "false"
+      ATS_BROWSER_HEADLESS: "true"
     volumes:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
