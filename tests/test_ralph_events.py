@@ -35,6 +35,20 @@ class RalphEventReviewTests(unittest.TestCase):
             self.assertTrue({"support_role_misclassified", "telegram_throttled",
                              "telegram_queue_missing"} <= rules)
 
+    def test_detects_zero_score_vibe_coder_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_review_event(
+                db, "1:7", "role_rejected",
+                source_url="https://adaptify.ai/jobs/vibe-coder",
+                title="Vibe Coder",
+                scores={"ml_engineering": 0},
+            )
+            events, _ = read_event_batch(db, after_id=0)
+            findings = analyze_events(events)
+            self.assertEqual(findings[0].rule_id, "supported_role_rejected")
+            self.assertEqual(findings[0].evidence["expected_direction"], "ml_engineering")
+
     def test_ignores_expired_pages_and_stores_no_transcript_field(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"
