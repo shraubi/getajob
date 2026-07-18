@@ -34,7 +34,18 @@ _THROTTLE_MARKERS = (
     "restricted outbound", "sending is disabled", "another telegram application is sending",
 )
 _SUCCESS_MARKERS = ("sent to @", "application submitted", "applied through hirify")
+_URL_RE = re.compile(r"https?://[^\\s<>()]+")
 _UNSUPPORTED = "does not match any of the available resumes"
+
+
+def extract_urls(messages: tuple[ChatMessage, ...]) -> tuple[str, ...]:
+    urls: list[str] = []
+    for message in messages:
+        for match in _URL_RE.findall(message.text):
+            url = match.rstrip(".,;:!?)]}")
+            if url and url not in urls:
+                urls.append(url)
+    return tuple(urls)
 
 
 def group_interactions(
@@ -70,6 +81,10 @@ def _finding(
     evidence: dict[str, object] | None = None,
 ) -> Finding:
     messages = interaction.messages
+    normalized_evidence = dict(evidence or {})
+    urls = extract_urls(messages)
+    if urls:
+        normalized_evidence["urls"] = list(urls)
     return Finding(
         rule_id=rule_id,
         severity=severity,
@@ -77,7 +92,7 @@ def _finding(
         interaction_id=interaction.id,
         message_ids=tuple(message.id for message in messages),
         timestamps=tuple(message.date.astimezone(timezone.utc).isoformat() for message in messages),
-        evidence=evidence or {},
+        evidence=normalized_evidence,
     )
 
 

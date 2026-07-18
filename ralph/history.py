@@ -21,10 +21,6 @@ class RalphHistoryError(RuntimeError):
     pass
 
 
-class RalphHistoryOverflowError(RalphHistoryError):
-    pass
-
-
 @dataclass(frozen=True)
 class Marker:
     message: ChatMessage
@@ -38,6 +34,7 @@ class HistoryResult:
     boundary_message_id: int
     messages: tuple[ChatMessage, ...]
     seed_request: ChatMessage | None
+    has_more: bool
 
 
 def parse_since(value: str | None) -> datetime | None:
@@ -120,15 +117,15 @@ async def find_latest_marker(client, entity) -> Marker | None:
     return select_latest_marker(tuple(found))
 
 
-async def _collect(iterator: AsyncIterator[object]) -> tuple[ChatMessage, ...]:
+async def _collect(
+    iterator: AsyncIterator[object], *, keep_latest: bool = False
+) -> tuple[tuple[ChatMessage, ...], bool]:
     messages = [from_telethon_message(raw) async for raw in iterator]
     messages.sort(key=lambda item: item.id)
-    if len(messages) > _MESSAGE_LIMIT:
-        raise RalphHistoryOverflowError(
-            f"More than {_MESSAGE_LIMIT} messages exist after the review boundary; "
-            "narrow the range with --since before reviewing"
-        )
-    return tuple(messages)
+    has_more = len(messages) > _MESSAGE_LIMIT
+    if has_more:
+        messages = messages[-_MESSAGE_LIMIT:] if keep_latest else messages[:_MESSAGE_LIMIT]
+    return tuple(messages), has_more
 
 
 async def read_history(
@@ -141,25 +138,36 @@ async def read_history(
     replay_latest_run: bool,
 ) -> HistoryResult:
     marker = await find_latest_marker(client, entity)
-    if marker is None and since is None:
-        raise RalphHistoryError("No outgoing Ralph-Run marker found; provide --since")
-
     marker_id = marker.message.id if marker else 0
-    boundary_id = marker_id
-    if checkpoint_message_id is not None and not replay_latest_run:
-        boundary_id = max(boundary_id, checkpoint_message_id)
+    seed = None
 
-    if boundary_id:
-        iterator = client.iter_messages(
-            entity, min_id=boundary_id, reverse=True, limit=_MESSAGE_LIMIT + 1
-        )
-    else:
+    # An explicit timestamp is an override. Normal runs require no timestamp:
+    # they continue from the checkpoint, then the latest marker, then the
+    # most recent 30 messages when neither boundary exists.
+    if since is not None:
+        boundary_id = 0
         iterator = client.iter_messages(
             entity, offset_date=since, reverse=True, limit=_MESSAGE_LIMIT + 1
         )
-    messages = await _collect(iterator)
-    seed = marker.message if marker and boundary_id == marker_id else None
-    return HistoryResult(peer_key, marker, boundary_id, messages, seed)
+        messages, has_more = await _collect(iterator)
+    else:
+        boundary_id = marker_id
+        if checkpoint_message_id is not None and not replay_latest_run:
+            boundary_id = max(boundary_id, checkpoint_message_id)
+        if boundary_id:
+            iterator = client.iter_messages(
+                entity, min_id=boundary_id, reverse=True, limit=_MESSAGE_LIMIT + 1
+            )
+            messages, has_more = await _collect(iterator)
+            seed = marker.message if marker and boundary_id == marker_id else None
+        else:
+            iterator = client.iter_messages(entity, limit=_MESSAGE_LIMIT + 1)
+            messages, _ = await _collect(iterator, keep_latest=True)
+            has_more = False
+
+    return HistoryResult(
+        peer_key, marker, boundary_id, messages, seed, has_more
+    )
 
 
 async def fetch_telegram_history(

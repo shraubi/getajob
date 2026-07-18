@@ -59,4 +59,4 @@ Put private resume PDFs in `data/resumes/`. They and all runtime state under `st
 
 See [architecture](docs/architecture.md), [operations](docs/operations.md), and the [legacy archive](archive/legacy_llm/README.md).
 
-Run a manual post-session review with `docker compose exec -T bot python -m ralph.review_chat`.
+Run a manual post-session review with `docker compose exec -T bot python -m ralph.review_chat`. Re-run the same command to process the next 30-message chunk.

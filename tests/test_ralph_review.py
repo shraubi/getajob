@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from ralph.analyzer import analyze_interactions, group_interactions
 from ralph.history import (
     RalphHistoryError,
-    RalphHistoryOverflowError,
     marker_run_id,
     parse_since,
     read_history,
@@ -81,13 +80,13 @@ class RalphMarkerTests(unittest.TestCase):
         self.assertIsNone(marker_run_id(incoming))
         self.assertIsNone(marker_run_id(partial))
 
-    def test_requires_marker_or_since(self):
-        client = FakeClient([], [])
-        with self.assertRaises(RalphHistoryError):
-            asyncio.run(read_history(
-                client, object(), peer_key="bot", checkpoint_message_id=None,
-                since=None, replay_latest_run=False,
-            ))
+    def test_defaults_to_most_recent_messages_without_marker_or_since(self):
+        client = FakeClient([], [message(3, "hello"), message(2, "older")])
+        result = asyncio.run(read_history(
+            client, object(), peer_key="bot", checkpoint_message_id=None,
+            since=None, replay_latest_run=False,
+        ))
+        self.assertEqual([item.id for item in result.messages], [2, 3])
 
     def test_checkpoint_and_replay_precedence(self):
         marker = message(10, "Ralph-Run: " + "a" * 32, outgoing=True)
@@ -117,14 +116,30 @@ class RalphMarkerTests(unittest.TestCase):
         self.assertEqual(result.messages[0].id, 3)
         self.assertEqual(client.calls[-1]["offset_date"], since)
 
-    def test_rejects_more_than_thirty_messages(self):
+    def test_since_overrides_marker_and_checkpoint(self):
+        since = parse_since("2026-07-18T10:00:00Z")
+        marker = message(10, "Ralph-Run: " + "a" * 32, outgoing=True)
+        client = FakeClient([marker], [message(3, "hello")])
+        result = asyncio.run(read_history(
+            client, object(), peer_key="bot", checkpoint_message_id=20,
+            since=since, replay_latest_run=False,
+        ))
+        self.assertEqual(result.boundary_message_id, 0)
+        self.assertEqual(result.messages[0].id, 3)
+        self.assertEqual(client.calls[-1]["offset_date"], since)
+        self.assertNotIn("min_id", client.calls[-1])
+
+    def test_paginates_thirty_messages_without_skipping(self):
         marker = message(1, "Ralph-Run: " + "a" * 32, outgoing=True)
         history = [message(index, "response") for index in range(2, 33)]
-        with self.assertRaises(RalphHistoryOverflowError):
-            asyncio.run(read_history(
-                FakeClient([marker], history), object(), peer_key="bot",
-                checkpoint_message_id=None, since=None, replay_latest_run=False,
-            ))
+        result = asyncio.run(read_history(
+            FakeClient([marker], history), object(), peer_key="bot",
+            checkpoint_message_id=None, since=None, replay_latest_run=False,
+        ))
+        self.assertEqual(len(result.messages), 30)
+        self.assertEqual(result.messages[0].id, 2)
+        self.assertEqual(result.messages[-1].id, 31)
+        self.assertTrue(result.has_more)
 
 
 class RalphAnalyzerTests(unittest.TestCase):
@@ -152,7 +167,7 @@ class RalphAnalyzerTests(unittest.TestCase):
 
     def test_flags_site_blocker_and_missing_path(self):
         blocked = self.analyze(
-            "Title: Python Engineer",
+            "https://jobs.example/42\nTitle: Python Engineer",
             [message(2, "Direction: backend_python\nApplication failed: CAPTCHA required", document=True)],
         )
         self.assertIn("application_blocked", blocked)
@@ -199,7 +214,8 @@ class RalphStoreTests(unittest.TestCase):
         report = ReviewReport(
             id="run", peer_key="bot", marker_message_id=1,
             marker_run_id="a" * 32, start_message_id=1, end_message_id=2,
-            analyzed_messages=1, findings=findings, created_at=NOW.isoformat(),
+            analyzed_messages=1, source_urls=("https://jobs.example/1",),
+            has_more=True, findings=findings, created_at=NOW.isoformat(),
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -213,6 +229,8 @@ class RalphStoreTests(unittest.TestCase):
             self.assertNotIn(b"private vacancy text", database_bytes)
             data = json.loads(serialized)
             self.assertEqual(data["review_run_id"], "run")
+            self.assertEqual(data["source_urls"], ["https://jobs.example/1"])
+            self.assertTrue(data["has_more"])
             checkpoint = RalphStore(db).get_checkpoint("bot")
             self.assertEqual(checkpoint.last_message_id, 2)
             connection = sqlite3.connect(db)
