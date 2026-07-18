@@ -59,4 +59,4 @@ Put private resume PDFs in `data/resumes/`. They and all runtime state under `st
 
 See [architecture](docs/architecture.md), [operations](docs/operations.md), [Ashby applications](docs/ashby.md), and the [legacy archive](archive/legacy_llm/README.md).
 
-Ralph runs as a separate Compose service and continuously reviews Jobbot's structured event journal. Follow it with `docker compose logs -f ralph`. The older Telethon history reviewer remains available as `docker compose exec -T bot python -m ralph.review_chat`.
+Ralph runs as a separate Compose service, continuously reviews Jobbot's structured event journal, and can publish deduplicated GitHub issues for actionable findings. Follow it with `docker compose logs -f ralph`. The older Telethon history reviewer remains available as `docker compose exec -T bot python -m ralph.review_chat`.
