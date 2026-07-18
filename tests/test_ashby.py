@@ -158,7 +158,7 @@ class AshbyTests(unittest.TestCase):
                 patch("jobbot.integrations.web_application.extract_resume_text", return_value=""),
                 patch(
                     "jobbot.integrations.ashby.fetch_ashby_posting",
-                    side_effect=lambda *_args, **_kwargs: fetch_fixture_posting(),
+                    new=fetch_fixture_posting,
                 ),
             ):
                 success = asyncio.run(
