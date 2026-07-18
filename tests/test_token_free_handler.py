@@ -63,9 +63,15 @@ class TokenFreeHandlerTests(unittest.IsolatedAsyncioTestCase):
             draft = ApplicationDraft(vacancy, "backend_python", resume, "Hello")
             ctx = SimpleNamespace(bot=FakeBot())
             with patch("jobbot.handlers.extract_first_url", side_effect=JobPageError("no URL")), \
-                 patch("jobbot.handlers.build_application", return_value=draft):
-                await _handle_token_free(ctx, "Python Engineer at Acme with Python APIs and PostgreSQL")
+                 patch("jobbot.handlers.build_application", return_value=draft), \
+                 patch("jobbot.handlers.record_review_event") as record_event:
+                await _handle_token_free(
+                    ctx, "Python Engineer at Acme with Python APIs and PostgreSQL",
+                    interaction_id="2:3",
+                )
             self.assertTrue(any("Role: Python Engineer" in item["text"] for item in ctx.bot.messages))
+            self.assertEqual(record_event.call_args.args[1:3], ("2:3", "job_previewed"))
+            self.assertNotIn("text", record_event.call_args.kwargs)
 
     async def test_hirify_job_reports_clean_contact_and_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
