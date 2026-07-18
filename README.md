@@ -24,6 +24,7 @@ getajob/
 │   └── integrations/       job pages, Hirify, Telegram, web forms
 ├── tests/                  active production tests
 ├── scripts/                operator utilities
+├── ralph/                  standalone read-only Telegram reviewer
 ├── docs/                   architecture and deployment notes
 ├── archive/legacy_llm/     frozen pre-deterministic implementation
 ├── data/resumes/           private PDFs mounted at runtime
@@ -57,3 +58,5 @@ Put private resume PDFs in `data/resumes/`. They and all runtime state under `st
 - Deployment resets tracked VM files to GitHub `main`; runtime data remains untracked.
 
 See [architecture](docs/architecture.md), [operations](docs/operations.md), and the [legacy archive](archive/legacy_llm/README.md).
+
+Run a manual post-session review with `docker compose exec -T bot python -m ralph.review_chat`.
