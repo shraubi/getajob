@@ -178,7 +178,7 @@ class AshbyTests(unittest.TestCase):
         self.assertIn("Email", failure.detail)
 
 
-async def fetch_fixture_posting():
+async def fetch_fixture_posting(*_args, **_kwargs):
     with patch("jobbot.integrations.ashby.validate_public_url", new=AsyncMock()):
         return await fetch_ashby_posting(CLIPBOARD_URL, transport=fixture_transport())
 
