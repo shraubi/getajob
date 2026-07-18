@@ -450,6 +450,43 @@ def format_missing_questions(preflight: AshbyPreflight) -> str:
     )
 
 
+async def _resolve_submit_control(page):
+    """Resolve a matched action by semantic identity, never a live DOM index."""
+    candidates = page.locator(
+        'button:visible, input[type="submit"]:visible, [role="button"]:visible'
+    )
+    labels = await candidates.evaluate_all(
+        """(elements) => elements.map((element) => (
+            element.innerText ||
+            element.value ||
+            element.getAttribute("aria-label") ||
+            element.getAttribute("title") ||
+            ""
+        ).trim())"""
+    )
+    match_index = best_submit_control_match(labels)
+    if match_index is None:
+        raise AshbyError(
+            "Could not identify a unique submit control "
+            f"(visible controls={labels})"
+        )
+
+    accessible_name = str(labels[match_index]).strip()
+    control = page.get_by_role(
+        "button",
+        name=accessible_name,
+        exact=True,
+    )
+    count = await control.count()
+    if count != 1:
+        raise AshbyError(
+            "Matched submit intent but could not re-resolve one stable "
+            f"semantic control (name={accessible_name!r}, count={count}, "
+            f"visible controls={labels})"
+        )
+    return control, accessible_name, labels
+
+
 async def _submit_with_playwright(
     preflight: AshbyPreflight,
     resume_path: Path,
@@ -654,35 +691,20 @@ async def _submit_with_playwright(
                         ) from exc
                     await option.first.click()
 
-            submit_controls = page.locator(
-                'button:visible, input[type="submit"]:visible, [role="button"]:visible'
+            submit_control, submit_name, submit_labels = (
+                await _resolve_submit_control(page)
             )
-            submit_labels = await submit_controls.evaluate_all(
-                """(elements) => elements.map((element) => (
-                    element.innerText ||
-                    element.value ||
-                    element.getAttribute("aria-label") ||
-                    element.getAttribute("title") ||
-                    ""
-                ).trim())"""
-            )
-            submit_index = best_submit_control_match(submit_labels)
-            if submit_index is None:
-                raise AshbyError(
-                    "Could not identify a unique submit control "
-                    f"(visible controls={submit_labels})"
-                )
-            selected_submit_label = _diagnostic_text(
-                submit_labels[submit_index]
-            )
+            selected_submit_label = _diagnostic_text(submit_name)
             initial_url = page.url
             logger.info(
-                "Ashby submission clicking control=%r url=%s visible_controls=%s",
+                "Ashby submission clicking control=%r enabled=%s url=%s "
+                "visible_controls=%s",
                 selected_submit_label,
+                await submit_control.is_enabled(),
                 _diagnostic_url(initial_url),
                 [_diagnostic_text(label, limit=80) for label in submit_labels],
             )
-            await submit_controls.nth(submit_index).click()
+            await submit_control.click()
             logger.info(
                 "Ashby submission click completed control=%r url=%s",
                 selected_submit_label,
