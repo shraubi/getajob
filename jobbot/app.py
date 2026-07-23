@@ -1,5 +1,6 @@
 """Telegram application wiring."""
 
+import asyncio
 import logging
 from contextlib import suppress
 
@@ -8,6 +9,7 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 from jobbot import config
 from jobbot.handlers import handle_callback, handle_vacancy_message
 from jobbot.logging_config import configure_logging
+from jobbot.telegram_queue import telegram_queue_worker
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +21,22 @@ def _clear_ready_file() -> None:
 
 async def _mark_ready(application: Application) -> None:
     """Publish readiness only after Telegram accepted the bot token."""
+    if config.TELEGRAM_SENDING_ENABLED:
+        application.bot_data["telegram_queue_task"] = application.create_task(
+            telegram_queue_worker(application.bot),
+            name="telegram-send-queue",
+        )
     config.BOT_READY_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.BOT_READY_FILE.write_text("ready\n", encoding="utf-8")
     logger.info("Telegram polling initialized as @%s", application.bot.username)
 
 
-async def _mark_stopped(_application: Application) -> None:
+async def _mark_stopped(application: Application) -> None:
+    task = application.bot_data.pop("telegram_queue_task", None)
+    if task:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     _clear_ready_file()
 
 

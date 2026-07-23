@@ -32,10 +32,12 @@ class RalphEventReviewTests(unittest.TestCase):
                 reason="minimum interval", queue_present=False)
             events, _ = read_event_batch(db, after_id=0)
             rules = {finding.rule_id for finding in analyze_events(events)}
-            self.assertTrue({"support_role_misclassified", "telegram_throttled",
-                             "telegram_queue_missing"} <= rules)
+            self.assertEqual(
+                rules,
+                {"support_role_misclassified", "telegram_queue_missing"},
+            )
 
-    def test_reports_any_zero_score_rejection_for_human_review(self):
+    def test_does_not_report_zero_score_rejection_as_an_error(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"
             record_review_event(
@@ -46,8 +48,7 @@ class RalphEventReviewTests(unittest.TestCase):
             )
             events, _ = read_event_batch(db, after_id=0)
             findings = analyze_events(events)
-            self.assertEqual(findings[0].rule_id, "unclassified_role_rejected")
-            self.assertEqual(findings[0].evidence["title"], "Novel Role Name")
+            self.assertEqual(findings, ())
 
     def test_blocker_evidence_preserves_the_failed_stage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -70,8 +71,12 @@ class RalphEventReviewTests(unittest.TestCase):
                 blocker_type="HTTP404", expired=True)
             events, _ = read_event_batch(db, after_id=0)
             self.assertEqual(analyze_events(events), ())
-            data = json.loads(sqlite3.connect(db).execute(
-                "SELECT data_json FROM jobbot_review_events").fetchone()[0])
+            connection = sqlite3.connect(db)
+            try:
+                data = json.loads(connection.execute(
+                    "SELECT data_json FROM jobbot_review_events").fetchone()[0])
+            finally:
+                connection.close()
             self.assertNotIn("text", data)
 
 if __name__ == "__main__":

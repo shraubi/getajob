@@ -105,15 +105,6 @@ def analyze_events(events: tuple[OperationalEvent, ...]) -> tuple[Finding, ...]:
                         "title": str(data.get("title") or ""),
                     },
                 ))
-            else:
-                findings.append(_finding(
-                    event, "unclassified_role_rejected", "medium",
-                    "A rejected vacancy had no recognized supported-direction signals and needs review",
-                    {
-                        "title": str(data.get("title") or ""),
-                        "direction_scores": scores,
-                    },
-                ))
         if event.event_type == "resume_missing" or (
             event.event_type == "job_previewed" and not bool(data.get("resume_preview"))
         ):
@@ -149,11 +140,6 @@ def analyze_events(events: tuple[OperationalEvent, ...]) -> tuple[Finding, ...]:
             ))
         if event.event_type == "telegram_throttled":
             reason = str(data.get("reason") or "telegram_limit")
-            findings.append(_finding(
-                event, "telegram_throttled", "medium",
-                "Telegram sending was blocked by a safety limit or cooldown",
-                {"reason": reason, "queue_present": bool(data.get("queue_present"))},
-            ))
             if not bool(data.get("queue_present")):
                 findings.append(_finding(
                     event, "telegram_queue_missing", "high",

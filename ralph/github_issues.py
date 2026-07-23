@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS ralph_github_issue_outbox (
 """
 _SEVERITY = {"low": 1, "medium": 2, "high": 3}
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_RULE_RE = re.compile(
+    r"(?:- Ralph rule: `([^`]+)`|Ralph detected \*\*([^*]+)\*\*)"
+)
+_EVIDENCE_RE = re.compile(r"```json\r?\n(.*?)\r?\n```", re.DOTALL)
+_RULE_FAMILIES = {
+    "telegram_throttled": "telegram_delivery_not_deferred",
+    "telegram_queue_missing": "telegram_delivery_not_deferred",
+}
 
 
 @dataclass(frozen=True)
@@ -41,17 +49,141 @@ class IssueDelivery:
     body: str
 
 
+def _normalized_reason(value: str) -> str:
+    collapsed = re.sub(r"[^a-z0-9]+", "", value.casefold())
+    if "peerflood" in collapsed:
+        return "peer_flood"
+    if "minimuminterval" in collapsed:
+        return "minimum_interval"
+    return value.strip()
+
+
+def _normalized_value(value: object, *, key: str = "") -> object:
+    if isinstance(value, dict):
+        return {
+            str(child_key): _normalized_value(child_value, key=str(child_key))
+            for child_key, child_value in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalized_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        normalized = value.strip()
+        return _normalized_reason(normalized) if key == "reason" else normalized
+    return value
+
+
+def _diagnostic_evidence(rule_id: str, evidence: dict[str, object]) -> dict[str, object]:
+    """Keep fields that define the error; omit per-occurrence source context."""
+    family = _RULE_FAMILIES.get(rule_id, rule_id)
+    keys_by_family = {
+        "application_blocked": ("blocker_types", "event_type"),
+        "telegram_delivery_not_deferred": ("queue_present", "reason"),
+        "resume_preview_missing": ("direction", "event_type"),
+        "application_path_missing": (
+            "event_type", "has_application_path", "has_preview",
+        ),
+        "supported_role_rejected": ("expected_direction", "title"),
+        "support_role_misclassified": (
+            "actual_direction", "title", "unsupported",
+        ),
+    }
+    keys = keys_by_family.get(family)
+    if keys is None:
+        return dict(evidence)
+    return {key: evidence[key] for key in keys if key in evidence}
+
+
+def _fingerprint_for(rule_id: str, evidence: dict[str, object]) -> str:
+    """Hash error-defining evidence while excluding occurrence/source metadata."""
+    identity = json.dumps(
+        {
+            "rule": _RULE_FAMILIES.get(rule_id, rule_id),
+            "evidence": _normalized_value(_diagnostic_evidence(rule_id, evidence)),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def _fingerprint(report: ReviewReport, finding: Finding) -> str:
+    del report
+    return _fingerprint_for(finding.rule_id, finding.evidence)
+
+
+def _occurrence_fingerprint(report: ReviewReport, finding: Finding) -> str:
     identity = json.dumps(
         {
             "peer": report.peer_key,
             "interaction": finding.interaction_id,
-            "rule": finding.rule_id,
             "message_ids": finding.message_ids,
+            "timestamps": finding.timestamps,
         },
+        ensure_ascii=False,
+        separators=(",", ":"),
         sort_keys=True,
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_from_body(body: str) -> str | None:
+    rule_match = _RULE_RE.search(body)
+    evidence_match = _EVIDENCE_RE.search(body)
+    if not rule_match or not evidence_match:
+        return None
+    rule_id = rule_match.group(1) or rule_match.group(2)
+    try:
+        evidence = json.loads(evidence_match.group(1))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(evidence, dict):
+        return None
+    return _fingerprint_for(rule_id, evidence)
+
+
+def _migrate_occurrence_fingerprints(connection: sqlite3.Connection) -> None:
+    """Move existing outbox rows to semantic keys so upgrades do not repost them."""
+    rows = connection.execute(
+        """SELECT fingerprint, title, body, status, issue_number, issue_url,
+                  attempts, last_error, last_attempt_at, created_at, updated_at
+           FROM ralph_github_issue_outbox
+           ORDER BY CASE status WHEN 'created' THEN 0 ELSE 1 END, created_at"""
+    ).fetchall()
+    for row in rows:
+        old_fingerprint, title, body, status, issue_number, issue_url, attempts, \
+            last_error, last_attempt_at, created_at, updated_at = row
+        new_fingerprint = _fingerprint_from_body(body)
+        if not new_fingerprint or new_fingerprint == old_fingerprint:
+            continue
+        existing = connection.execute(
+            """SELECT status FROM ralph_github_issue_outbox WHERE fingerprint=?""",
+            (new_fingerprint,),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                """UPDATE ralph_github_issue_outbox SET fingerprint=?
+                   WHERE fingerprint=?""",
+                (new_fingerprint, old_fingerprint),
+            )
+            continue
+        if status == "created" and existing[0] != "created":
+            connection.execute(
+                """UPDATE ralph_github_issue_outbox
+                   SET title=?, body=?, status=?, issue_number=?, issue_url=?,
+                       attempts=?, last_error=?, last_attempt_at=?,
+                       created_at=?, updated_at=?
+                   WHERE fingerprint=?""",
+                (
+                    title, body, status, issue_number, issue_url, attempts,
+                    last_error, last_attempt_at, created_at, updated_at,
+                    new_fingerprint,
+                ),
+            )
+        connection.execute(
+            "DELETE FROM ralph_github_issue_outbox WHERE fingerprint=?",
+            (old_fingerprint,),
+        )
 
 
 def _display_value(value: object) -> str:
@@ -143,6 +275,7 @@ def _issue_content(report: ReviewReport, finding: Finding) -> tuple[str, str]:
     problem, expected, next_step, readable_title = _issue_explanation(finding)
     title = f"[Ralph] {readable_title}"[:256]
     fingerprint = _fingerprint(report, finding)
+    occurrence = _occurrence_fingerprint(report, finding)
     urls = finding.evidence.get("urls")
     if not isinstance(urls, list):
         urls = []
@@ -164,6 +297,7 @@ def _issue_content(report: ReviewReport, finding: Finding) -> tuple[str, str]:
         f"- Interaction: `{finding.interaction_id}`",
         f"- Event IDs: {', '.join(str(value) for value in finding.message_ids)}",
         f"- Ralph rule: `{finding.rule_id}` ({finding.severity})",
+        f"- Diagnostic signature: `{fingerprint}`",
     ]
     for url in urls:
         if isinstance(url, str) and url.startswith(("http://", "https://")):
@@ -179,7 +313,12 @@ def _issue_content(report: ReviewReport, finding: Finding) -> tuple[str, str]:
             "```",
             "</details>",
             "",
+            "Ralph deduplicates on the rule family and error-defining diagnostic fields. "
+            "The full evidence, source, interaction, event, and timestamp fields remain "
+            "trace context for verifying the match.",
+            "",
             f"<!-- ralph-finding:{fingerprint} -->",
+            f"<!-- ralph-occurrence:{occurrence} -->",
         )
     )
     return title, "\n".join(lines)
@@ -193,6 +332,8 @@ class GitHubIssueOutbox:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.db_path, timeout=10)
         connection.execute(_SCHEMA)
+        _migrate_occurrence_fingerprints(connection)
+        connection.commit()
         return connection
 
     def enqueue_report(self, report: ReviewReport, *, min_severity: str = "medium") -> int:
@@ -224,6 +365,7 @@ class GitHubIssueOutbox:
         repository: str,
         token: str,
         retry_seconds: int = 300,
+        get: Callable[..., object] = httpx.get,
         post: Callable[..., object] = httpx.post,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if not token or not _REPOSITORY_RE.fullmatch(repository):
@@ -246,6 +388,45 @@ class GitHubIssueOutbox:
             for fingerprint, title, body in rows:
                 attempted_at = datetime.now(timezone.utc).isoformat()
                 try:
+                    search_response = get(
+                        "https://api.github.com/search/issues",
+                        headers={
+                            "Accept": "application/vnd.github+json",
+                            "Authorization": f"Bearer {token}",
+                            "X-GitHub-Api-Version": "2022-11-28",
+                        },
+                        params={
+                            "q": f'repo:{repository} is:issue in:title "{title}"',
+                            "per_page": 100,
+                        },
+                        timeout=20.0,
+                    )
+                    search_response.raise_for_status()
+                    search_payload = search_response.json()
+                    existing_issue = next(
+                        (
+                            item for item in search_payload.get("items", ())
+                            if isinstance(item, dict)
+                            and _fingerprint_from_body(str(item.get("body") or ""))
+                            == fingerprint
+                        ),
+                        None,
+                    )
+                    if existing_issue is not None:
+                        issue_url = str(existing_issue["html_url"])
+                        issue_number = int(existing_issue["number"])
+                        connection.execute(
+                            """UPDATE ralph_github_issue_outbox
+                               SET status='created', issue_number=?, issue_url=?,
+                                   attempts=attempts+1, last_error='',
+                                   last_attempt_at=?, updated_at=?
+                               WHERE fingerprint=?""",
+                            (
+                                issue_number, issue_url, attempted_at, attempted_at,
+                                fingerprint,
+                            ),
+                        )
+                        continue
                     response = post(
                         f"https://api.github.com/repos/{repository}/issues",
                         headers={

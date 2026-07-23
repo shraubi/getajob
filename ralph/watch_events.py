@@ -35,7 +35,7 @@ def review_once() -> tuple[ReviewReport, Path] | None:
     output = _REPORT_DIR / f"events-{review_id}.json"
     write_report(report, output)
     GitHubIssueOutbox(_RALPH_DB).enqueue_report(
-        report, min_severity="medium"
+        report, min_severity="high"
     )
     store.save_review(report, output)
     return report, output

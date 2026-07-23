@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import tempfile
@@ -35,12 +36,21 @@ class AppReadinessTests(unittest.IsolatedAsyncioTestCase):
     async def test_readiness_tracks_authenticated_telegram_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             ready_file = Path(directory) / "jobbot-ready"
-            application = SimpleNamespace(bot=SimpleNamespace(username="job_bot"))
-            with patch.object(config, "BOT_READY_FILE", ready_file):
+            application = SimpleNamespace(
+                bot=SimpleNamespace(username="job_bot"),
+                bot_data={},
+                create_task=lambda coroutine, **_kwargs: asyncio.create_task(coroutine),
+            )
+            with (
+                patch.object(config, "BOT_READY_FILE", ready_file),
+                patch.object(config, "TELEGRAM_SENDING_ENABLED", True),
+            ):
                 await _mark_ready(application)
                 self.assertEqual(ready_file.read_text(encoding="utf-8"), "ready\n")
+                self.assertIn("telegram_queue_task", application.bot_data)
                 await _mark_stopped(application)
                 self.assertFalse(ready_file.exists())
+                self.assertNotIn("telegram_queue_task", application.bot_data)
 
 
 if __name__ == "__main__":

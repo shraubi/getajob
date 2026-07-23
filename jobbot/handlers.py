@@ -1,7 +1,7 @@
 import logging
 import time
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -22,13 +22,12 @@ from jobbot.integrations.hirify import HirifyError, HirifyClient, is_hirify_job_
 from jobbot.integrations.job_page import JobPageError, extract_first_url, fetch_job_from_message, resolve_application_url
 from jobbot.store import (
     claim_job_for_send,
-    claim_telegram_job_for_send,
+    enqueue_telegram_job,
     get_job_by_prefix,
     mark_job_send_failed,
     mark_job_sent,
     record_send_attempt,
     save_fetched_job,
-    set_sender_cooldown,
 )
 from jobbot.application import (
     ResumeNotFoundError,
@@ -38,7 +37,6 @@ from jobbot.application import (
     parse_vacancy,
     render_telegram_message,
 )
-from jobbot.integrations.telegram_sender import TelegramPeerFloodError, TelegramSender, TelegramSenderError
 from jobbot.integrations.telegram_input import telegram_message_url
 from jobbot.integrations.web_application import WebApplicationError, submit_application
 
@@ -405,63 +403,42 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Telegram sending is disabled; no message was sent.")
             _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason="sending_disabled", queue_present=False)
             return
-        claimed, retry_at, reason = claim_telegram_job_for_send(
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        notify_chat_id = int(
+            getattr(message, "chat_id", 0)
+            or getattr(chat, "id", 0)
+            or 0
+        )
+        queued = enqueue_telegram_job(
             config.JOBS_DB_PATH,
             job["id"],
-            min_interval_seconds=config.TELEGRAM_SEND_MIN_INTERVAL_SECONDS,
-            max_per_hour=config.TELEGRAM_SEND_MAX_PER_HOUR,
+            available_at=datetime.now(timezone.utc),
+            reason="user_confirmed",
+            interaction_id=interaction_id,
+            notify_chat_id=notify_chat_id,
         )
-        if not claimed:
-            if retry_at:
-                record_send_attempt(
-                    config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "throttled"
-                )
-                await query.edit_message_text(
-                    f"Telegram send paused until {retry_at.astimezone(timezone.utc):%Y-%m-%d %H:%M UTC}: {reason}."
-                )
-                _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason=reason, queue_present=False)
-            else:
-                await query.edit_message_text("This application is already sending or sent.")
-            return
-        try:
-            if not config.TELEGRAM_API_ID or not config.TELEGRAM_API_HASH:
-                raise TelegramSenderError("Telegram sender is not configured")
-            sender = TelegramSender(config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH, config.TELEGRAM_SESSION_PATH)
-            external_id = await sender.send_resume(
-                job["contact_value"], job["recruiter_message"], config.RESUME_DIR / job["resume_name"]
-            )
-            mark_job_sent(config.JOBS_DB_PATH, job["id"], external_id)
-            record_send_attempt(
-                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "sent"
-            )
-        except TelegramPeerFloodError as exc:
-            blocked_until = datetime.now(timezone.utc) + timedelta(
-                hours=config.TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS
-            )
-            set_sender_cooldown(config.JOBS_DB_PATH, "telegram", blocked_until, "Telegram PeerFlood")
-            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
-            record_send_attempt(
-                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "peer_flood", exc
-            )
-            logger.warning("Telegram PeerFlood; sends paused until %s", blocked_until.isoformat())
+        if not queued:
             await query.edit_message_text(
-                f"Telegram restricted outbound messages. Automatic sends are paused until "
-                f"{blocked_until:%Y-%m-%d %H:%M UTC}; this application was not sent."
+                "This Telegram application is already queued, sending, or sent."
             )
-            _review_event(interaction_id, "telegram_throttled", source_url=job["page_url"], reason="peer_flood", queue_present=False)
             return
-        except Exception as exc:
-            mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
-            record_send_attempt(
-                config.JOBS_DB_PATH, job["id"], "telegram", job["contact_value"], "failed", exc
-            )
-            logger.exception("Telegram application send failed for job %s", job["id"])
-            await query.edit_message_text(f"Send failed: {exc}")
-            _review_event(interaction_id, "application_failed", source_url=job["page_url"], blocker_type=type(exc).__name__)
-            return
-        await query.edit_message_text(
-            f"Sent to @{job['contact_value'].lstrip('@')} with {job['resume_name']} (message {external_id})."
+        record_send_attempt(
+            config.JOBS_DB_PATH,
+            job["id"],
+            "telegram",
+            job["contact_value"],
+            "queued",
         )
-        _review_event(interaction_id, "application_sent", source_url=job["page_url"], channel="telegram")
+        await query.edit_message_text(
+            f"Queued for Telegram delivery to @{job['contact_value'].lstrip('@')} "
+            f"with {job['resume_name']}."
+        )
+        _review_event(
+            interaction_id,
+            "telegram_queued",
+            source_url=job["page_url"],
+            queue_present=True,
+        )
         return
     await query.edit_message_text("Unknown action.")

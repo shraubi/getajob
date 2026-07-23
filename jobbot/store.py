@@ -54,14 +54,40 @@ CREATE TABLE IF NOT EXISTS sender_cooldowns (
 )
 """
 
+_TELEGRAM_QUEUE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS telegram_send_queue (
+    job_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    available_at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    interaction_id TEXT NOT NULL DEFAULT '',
+    notify_chat_id INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_SCHEMA)
     connection.execute(_OUTBOUND_SCHEMA)
     connection.execute(_COOLDOWN_SCHEMA)
+    connection.execute(_TELEGRAM_QUEUE_SCHEMA)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
     if "recruiter_message" not in columns:
         connection.execute("ALTER TABLE jobs ADD COLUMN recruiter_message TEXT NOT NULL DEFAULT ''")
+    queue_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(telegram_send_queue)"
+        )
+    }
+    if "status" not in queue_columns:
+        connection.execute(
+            """ALTER TABLE telegram_send_queue
+               ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"""
+        )
 
 
 def save_fetched_job(
@@ -171,7 +197,7 @@ def claim_telegram_job_for_send(
         connection.execute("BEGIN IMMEDIATE")
         _ensure_schema(connection)
         target = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not target or target[0] not in {"parsed", "send_failed"}:
+        if not target or target[0] not in {"parsed", "queued", "send_failed"}:
             connection.rollback()
             return False, None, ""
 
@@ -221,11 +247,194 @@ def claim_telegram_job_for_send(
             return False, retry_at, f"hourly Telegram limit ({max_per_hour})"
 
         cursor = connection.execute(
-            "UPDATE jobs SET status='sending' WHERE id=? AND status IN ('parsed', 'send_failed')",
+            """UPDATE jobs SET status='sending'
+               WHERE id=? AND status IN ('parsed', 'queued', 'send_failed')""",
             (job_id,),
         )
         connection.commit()
         return cursor.rowcount == 1, None, ""
+    finally:
+        connection.close()
+
+
+def enqueue_telegram_job(
+    db_path: Path,
+    job_id: str,
+    *,
+    available_at: datetime,
+    reason: str,
+    interaction_id: str,
+    notify_chat_id: int = 0,
+) -> bool:
+    """Persist one Telegram application for eventual serialized delivery."""
+    now = datetime.now(timezone.utc).isoformat()
+    connection = sqlite3.connect(db_path, timeout=10)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _ensure_schema(connection)
+        job = connection.execute(
+            "SELECT contact_kind, status FROM jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if (
+            not job
+            or job[0] != "telegram"
+            or job[1] in {"sent", "sending"}
+            or connection.execute(
+                "SELECT 1 FROM telegram_send_queue WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        ):
+            connection.rollback()
+            return False
+        connection.execute(
+            """INSERT INTO telegram_send_queue (
+                   job_id, available_at, reason, interaction_id,
+                   notify_chat_id, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job_id, available_at.isoformat(), reason, interaction_id,
+                notify_chat_id, now, now,
+            ),
+        )
+        connection.execute(
+            """UPDATE jobs SET status='queued'
+               WHERE id=? AND status IN ('parsed', 'send_failed')""",
+            (job_id,),
+        )
+        connection.commit()
+        return True
+    finally:
+        connection.close()
+
+
+def get_due_telegram_job(
+    db_path: Path,
+    *,
+    now: datetime | None = None,
+) -> dict | None:
+    """Return the oldest due Telegram queue item with its persisted job."""
+    if not db_path.is_file():
+        return None
+    current = (now or datetime.now(timezone.utc)).isoformat()
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """SELECT jobs.*, telegram_send_queue.available_at AS queue_available_at,
+                      telegram_send_queue.reason AS queue_reason,
+                      telegram_send_queue.interaction_id AS queue_interaction_id,
+                      telegram_send_queue.notify_chat_id AS queue_notify_chat_id,
+                      telegram_send_queue.attempts AS queue_attempts,
+                      telegram_send_queue.last_error AS queue_last_error
+               FROM telegram_send_queue
+               JOIN jobs ON jobs.id=telegram_send_queue.job_id
+               WHERE jobs.status='queued'
+                 AND telegram_send_queue.status='pending'
+                 AND telegram_send_queue.available_at <= ?
+               ORDER BY telegram_send_queue.available_at,
+                        telegram_send_queue.created_at
+               LIMIT 1""",
+            (current,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def defer_telegram_job(
+    db_path: Path,
+    job_id: str,
+    *,
+    available_at: datetime,
+    reason: str,
+    error: Exception | None = None,
+    increment_attempts: bool = False,
+) -> None:
+    """Return a claimed queue item to the queue at a safe retry time."""
+    connection = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(connection)
+        connection.execute(
+            """UPDATE telegram_send_queue
+               SET available_at=?, reason=?, last_error=?,
+                   attempts=attempts+?, updated_at=?
+               WHERE job_id=?""",
+            (
+                available_at.isoformat(), reason,
+                f"{type(error).__name__}: {error}"[:1000] if error else "",
+                1 if increment_attempts else 0,
+                datetime.now(timezone.utc).isoformat(), job_id,
+            ),
+        )
+        connection.execute(
+            """UPDATE jobs SET status='queued'
+               WHERE id=? AND status IN ('sending', 'send_failed', 'queued')""",
+            (job_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def pause_telegram_job(
+    db_path: Path,
+    job_id: str,
+    *,
+    reason: str,
+    error: Exception,
+) -> None:
+    """Keep an application queued without permitting automatic retries."""
+    connection = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(connection)
+        connection.execute(
+            """UPDATE telegram_send_queue
+               SET status='paused', reason=?, last_error=?,
+                   attempts=attempts+1, updated_at=?
+               WHERE job_id=?""",
+            (
+                reason,
+                f"{type(error).__name__}: {error}"[:1000],
+                datetime.now(timezone.utc).isoformat(),
+                job_id,
+            ),
+        )
+        connection.execute(
+            """UPDATE jobs SET status='queued'
+               WHERE id=? AND status IN ('sending', 'send_failed', 'queued')""",
+            (job_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def complete_telegram_job(db_path: Path, job_id: str) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM telegram_send_queue WHERE job_id=?",
+            (job_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_telegram_queue_item(db_path: Path, job_id: str) -> dict | None:
+    if not db_path.is_file():
+        return None
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        _ensure_schema(connection)
+        row = connection.execute(
+            "SELECT * FROM telegram_send_queue WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         connection.close()
 

@@ -41,6 +41,7 @@ sys.modules.setdefault("storage.state", storage_state_module)
 
 from jobbot import config
 from jobbot.handlers import _handle_token_free, handle_callback
+from jobbot.telegram_queue import process_telegram_queue_once
 from jobbot.integrations.ats import AtsPreflight, AtsSubmissionResult
 from jobbot.integrations.hirify import Contact, DirectApplication
 from jobbot.integrations.job_page import ParsedJobPage
@@ -353,27 +354,35 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
             update = SimpleNamespace(callback_query=query)
             FakeSender.calls.clear()
             with (
-                patch("jobbot.handlers.TelegramSender", FakeSender),
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+            ):
+                await handle_callback(update, SimpleNamespace())
+
+            self.assertEqual(FakeSender.calls, [])
+            self.assertIn("Queued for Telegram delivery", query.edited)
+            with (
+                patch("jobbot.telegram_queue.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
                 patch.object(config, "RESUME_DIR", root),
                 patch.object(config, "TELEGRAM_API_ID", 1),
                 patch.object(config, "TELEGRAM_API_HASH", "hash"),
+                patch.object(config, "TELEGRAM_SEND_MIN_INTERVAL_SECONDS", 0),
+                patch.object(config, "TELEGRAM_SEND_MAX_PER_HOUR", 0),
             ):
-                await handle_callback(update, SimpleNamespace())
+                self.assertTrue(await process_telegram_queue_once())
 
             self.assertEqual(FakeSender.calls[0][0], "artem_avsievich")
             self.assertEqual(FakeSender.calls[0][2], "backend.pdf")
             self.assertIn("Приветствую, хочу откликнуться", FakeSender.calls[0][1])
-            self.assertIn("Sent to @artem_avsievich", query.edited)
 
             duplicate_query = FakeQuery(button_data)
             with (
-                patch("jobbot.handlers.TelegramSender", FakeSender),
                 patch.object(config, "JOBS_DB_PATH", db_path),
             ):
                 await handle_callback(SimpleNamespace(callback_query=duplicate_query), SimpleNamespace())
             self.assertEqual(len(FakeSender.calls), 1)
-            self.assertIn("already sending or sent", duplicate_query.edited)
+            self.assertIn("already queued, sending, or sent", duplicate_query.edited)
 
 
 if __name__ == "__main__":
