@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -13,7 +14,6 @@ from jobbot.review_events import record_review_event
 from jobbot.integrations.ats import (
     AtsError,
     fetch_ats_page,
-    format_missing_questions,
     is_ats_job_url,
     preflight_ats_application,
     submit_ats_application,
@@ -23,11 +23,26 @@ from jobbot.integrations.job_page import JobPageError, extract_first_url, fetch_
 from jobbot.store import (
     claim_job_for_send,
     enqueue_telegram_job,
+    get_job,
     get_job_by_prefix,
     mark_job_send_failed,
+    mark_job_awaiting_answers,
     mark_job_sent,
     record_send_attempt,
     save_fetched_job,
+)
+from jobbot.form_answers import (
+    FormQuestion,
+    close_batch,
+    create_answer_batch,
+    deduplicate_questions,
+    fact_token,
+    forget_fact_by_token,
+    get_pending_batches,
+    mark_batch_consented,
+    parse_numbered_answers,
+    save_batch_answers,
+    set_batch_message_id,
 )
 from jobbot.application import (
     ResumeNotFoundError,
@@ -38,7 +53,11 @@ from jobbot.application import (
     render_telegram_message,
 )
 from jobbot.integrations.telegram_input import telegram_message_url
-from jobbot.integrations.web_application import WebApplicationError, submit_application
+from jobbot.integrations.web_application import (
+    WebApplicationError,
+    preflight_application,
+    submit_application,
+)
 
 logger = logging.getLogger(__name__)
 _MIN_JD_LENGTH = 50
@@ -84,7 +103,48 @@ def _target_chat_id(ctx) -> int:
 
 
 async def _notify(ctx, text: str, **kwargs):
-    await ctx.bot.send_message(chat_id=_target_chat_id(ctx), text=text, **kwargs)
+    return await ctx.bot.send_message(chat_id=_target_chat_id(ctx), text=text, **kwargs)
+
+
+def _format_question_batch(questions: tuple[FormQuestion, ...]) -> str:
+    rows = [
+        "I need a few application answers.",
+        "Reply with one numbered answer per line. A valid reply authorizes immediate submission for this job.",
+        "",
+    ]
+    for ordinal, question in enumerate(questions, 1):
+        optional = " (optional; reply Skip)" if not question.required else ""
+        rows.append(f"{ordinal}. {question.label}{optional}")
+        if question.is_boolean:
+            rows.append("   Allowed: Yes / No")
+        elif question.options:
+            rows.append(
+                "   Options: " + " | ".join(
+                    f"{index}. {option}" for index, option in enumerate(question.options, 1)
+                )
+            )
+    return "\n".join(rows)
+
+
+async def _send_question_batch(
+    ctx,
+    job_id: str,
+    questions: tuple[FormQuestion, ...],
+    *,
+    chat_id: int | None = None,
+) -> str:
+    questions = deduplicate_questions(questions)
+    target_chat = int(chat_id or _target_chat_id(ctx))
+    batch_id = create_answer_batch(config.JOBS_DB_PATH, job_id, target_chat, questions)
+    mark_job_awaiting_answers(config.JOBS_DB_PATH, job_id)
+    sent = await ctx.bot.send_message(
+        chat_id=target_chat,
+        text=_format_question_batch(questions),
+    )
+    message_id = int(getattr(sent, "message_id", 0) or 0)
+    if message_id:
+        set_batch_message_id(config.JOBS_DB_PATH, batch_id, message_id)
+    return batch_id
 
 
 def _review_event(interaction_id: str, event_type: str, **data: object) -> None:
@@ -187,6 +247,7 @@ async def _handle_token_free(
                 parsed_page.fetched_url,
                 draft.resume_path,
                 config.APPLICATION_PROFILE_PATH,
+                answer_db_path=config.JOBS_DB_PATH,
             )
         except AtsError as exc:
             await _notify(ctx, f"Could not prepare the ATS application: {exc}")
@@ -200,6 +261,29 @@ async def _handle_token_free(
     job_id = save_fetched_job(
         config.JOBS_DB_PATH, parsed_page, draft.direction, draft.resume_path.name, draft.message
     ) if parsed_page else ""
+    web_preflight = None
+    if (
+        parsed_page
+        and parsed_page.apply_url
+        and parsed_page.contact_kind == "web"
+    ):
+        try:
+            web_preflight = await preflight_application(
+                parsed_page.apply_url,
+                draft.resume_path,
+                config.APPLICATION_PROFILE_PATH,
+                config.JOBS_DB_PATH,
+                job_id=job_id,
+                company=draft.vacancy.company,
+            )
+        except WebApplicationError as exc:
+            await _notify(ctx, f"Could not prepare the web application: {exc}")
+            _review_event(
+                interaction_id, "application_failed", source_url=source_url,
+                blocker_type=type(exc).__name__,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return
     logger.info(
         "Parsed job id=%s source=%s direction=%s title=%r resume=%s",
         job_id, parsed_page.source_category if parsed_page else "telegram_message", draft.direction,
@@ -222,14 +306,18 @@ async def _handle_token_free(
             filename=draft.resume_path.name,
             caption=f"Selected resume: {draft.direction}",
         )
-    if ats_preflight and ats_preflight.missing:
-        await _notify(
-            ctx,
-            format_missing_questions(ats_preflight)
-            + "\nAdd these answers to applicant.json under \"answers\", then send the vacancy again.",
-        )
+    pending_questions = ()
+    reused_questions = ()
+    if ats_preflight:
+        pending_questions = ats_preflight.questions
+        reused_questions = ats_preflight.reused
+    elif web_preflight:
+        pending_questions = web_preflight.questions
+        reused_questions = web_preflight.reused
+    if pending_questions:
+        await _send_question_batch(ctx, job_id, pending_questions)
         _review_event(
-            interaction_id, "application_failed", source_url=source_url,
+            interaction_id, "application_questions_requested", source_url=source_url,
             blocker_type="required_fields",
             duration_ms=int((time.monotonic() - started) * 1000),
         )
@@ -263,6 +351,21 @@ async def _handle_token_free(
             InlineKeyboardButton("Skip", callback_data=f"applyskip:{job_id[:24]}"),
         ]])
     preview = f"Recruiter message:\n\n{draft.message}" if draft.message else "No cover message â€” resume only."
+    if reused_questions:
+        unique_reused = deduplicate_questions(reused_questions)
+        preview += "\n\nReusing saved answers:\n" + "\n".join(
+            f"• {question.label}" for question in unique_reused
+        )
+        if confirmation:
+            rows = [list(row) for row in confirmation.inline_keyboard]
+            rows.extend(
+                [InlineKeyboardButton(
+                    f"Forget: {question.label[:34]}",
+                    callback_data=f"forget:{fact_token(question)}",
+                )]
+                for question in unique_reused
+            )
+            confirmation = InlineKeyboardMarkup(rows)
     await _notify(ctx, preview, reply_markup=confirmation)
     _review_event(
         interaction_id, "job_previewed", source_url=source_url,
@@ -272,9 +375,159 @@ async def _handle_token_free(
         duration_ms=int((time.monotonic() - started) * 1000),
     )
 
+
+async def _preflight_saved_job(job: dict) -> tuple[FormQuestion, ...]:
+    resume_path = config.RESUME_DIR / job["resume_name"]
+    if job["contact_kind"] == "ats":
+        preflight = await preflight_ats_application(
+            job["page_url"], resume_path, config.APPLICATION_PROFILE_PATH,
+            answer_db_path=config.JOBS_DB_PATH,
+        )
+        return preflight.questions
+    preflight = await preflight_application(
+        job["apply_url"], resume_path, config.APPLICATION_PROFILE_PATH,
+        config.JOBS_DB_PATH, job_id=job["id"], company=job["company"],
+    )
+    return preflight.questions
+
+
+def _forget_markup(questions: tuple[FormQuestion, ...]):
+    rows = []
+    for question in deduplicate_questions(questions):
+        rows.append([InlineKeyboardButton(
+            f"Forget: {question.label[:34]}",
+            callback_data=f"forget:{fact_token(question)}",
+        )])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def _submit_answered_job(
+    ctx,
+    job: dict,
+    batch_id: str,
+    questions: tuple[FormQuestion, ...],
+) -> None:
+    if not mark_batch_consented(config.JOBS_DB_PATH, batch_id):
+        await _notify(ctx, "This answer batch was already handled.")
+        return
+    if not claim_job_for_send(config.JOBS_DB_PATH, job["id"]):
+        await _notify(ctx, "This application is already sending or sent.")
+        return
+    try:
+        if job["contact_kind"] == "ats":
+            provider = job["contact_value"]
+            result = await submit_ats_application(
+                job["page_url"],
+                config.RESUME_DIR / job["resume_name"],
+                config.APPLICATION_PROFILE_PATH,
+                config.ASHBY_BROWSER_PROFILE_PATH,
+                headless=config.ATS_BROWSER_HEADLESS,
+                answer_db_path=config.JOBS_DB_PATH,
+            )
+            if result.status != "submitted":
+                mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+                record_send_attempt(
+                    config.JOBS_DB_PATH, job["id"], provider,
+                    job["page_url"], result.status,
+                )
+                await _notify(
+                    ctx,
+                    f"{provider.title()} needs your help: {result.detail}\nFinish here: {result.url}",
+                )
+                return
+            mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)
+            record_send_attempt(
+                config.JOBS_DB_PATH, job["id"], provider, job["page_url"], "sent"
+            )
+            message = (
+                f"Application submitted through {provider.title()} "
+                f"with {job['resume_name']}.\n{result.url}"
+            )
+        else:
+            result_url = await submit_application(
+                job["apply_url"],
+                config.RESUME_DIR / job["resume_name"],
+                config.APPLICATION_PROFILE_PATH,
+                job["recruiter_message"],
+                answer_db_path=config.JOBS_DB_PATH,
+                job_id=job["id"],
+                company=job["company"],
+            )
+            mark_job_sent(config.JOBS_DB_PATH, job["id"], 0)
+            message = f"Application submitted with {job['resume_name']}.\n{result_url}"
+        await _notify(ctx, message, reply_markup=_forget_markup(questions))
+    except Exception as exc:
+        mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
+        logger.exception("Answered application failed for job %s", job["id"])
+        await _notify(ctx, f"Application failed: {exc}\nFinish manually: {job['apply_url']}")
+
+
+async def _try_handle_answer_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    msg = update.message
+    if not msg or msg.chat.id not in config.ALLOWED_CHAT_IDS:
+        return False
+    text = (msg.text or msg.caption or "").strip()
+    if not text:
+        return False
+    batches = get_pending_batches(config.JOBS_DB_PATH, msg.chat.id)
+    if not batches:
+        return False
+    reply_id = int(
+        getattr(getattr(msg, "reply_to_message", None), "message_id", 0) or 0
+    )
+    selected = next(
+        (batch for batch in batches if reply_id and batch["bot_message_id"] == reply_id),
+        None,
+    )
+    looks_numbered = bool(re.match(r"^\s*\d+\s*[.):-]", text))
+    if selected is None:
+        if not looks_numbered:
+            return False
+        if len(batches) != 1:
+            await _notify(ctx, "Several applications are waiting. Reply to the specific question message.")
+            return True
+        selected = batches[0]
+    questions = selected["questions"]
+    parsed = parse_numbered_answers(text, questions)
+    if parsed.answers:
+        save_batch_answers(
+            config.JOBS_DB_PATH, selected["id"], questions, parsed.answers
+        )
+    if parsed.errors:
+        remaining = tuple(
+            question for ordinal, question in enumerate(questions, 1)
+            if ordinal not in parsed.answers
+        )
+        close_batch(config.JOBS_DB_PATH, selected["id"])
+        await _notify(ctx, "Some answers need attention:\n" + "\n".join(parsed.errors))
+        await _send_question_batch(ctx, selected["job_id"], remaining, chat_id=msg.chat.id)
+        return True
+    job = get_job(config.JOBS_DB_PATH, selected["job_id"])
+    if not job:
+        close_batch(config.JOBS_DB_PATH, selected["id"], "cancelled")
+        await _notify(ctx, "The saved application was not found.")
+        return True
+    try:
+        newly_missing = deduplicate_questions(await _preflight_saved_job(job))
+    except (AtsError, WebApplicationError) as exc:
+        close_batch(config.JOBS_DB_PATH, selected["id"], "cancelled")
+        await _notify(ctx, f"Could not recheck the application: {exc}")
+        return True
+    if newly_missing:
+        close_batch(config.JOBS_DB_PATH, selected["id"])
+        await _send_question_batch(
+            ctx, job["id"], newly_missing, chat_id=msg.chat.id
+        )
+        return True
+    await _submit_answered_job(ctx, job, selected["id"], questions)
+    return True
+
+
 async def handle_vacancy_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or msg.chat.id not in config.ALLOWED_CHAT_IDS:
+        return
+    if await _try_handle_answer_message(update, ctx):
         return
     text = msg.text or msg.caption or ""
     if not text:
@@ -300,9 +553,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query_message = getattr(query, "message", None)
     query_chat = getattr(getattr(query_message, "chat", None), "id", 0)
     query_message_id = getattr(query_message, "message_id", 0)
+    if query_chat and query_chat not in config.ALLOWED_CHAT_IDS:
+        await query.edit_message_text("This action is not authorized.")
+        return
     interaction_id = f"callback:{query_chat}:{query_message_id}:{data.split(':', 1)[0]}"
     if data.startswith("applyskip:"):
         await query.edit_message_text("Application skipped.")
+        return
+    if data.startswith("forget:"):
+        token = data.split(":", 1)[1]
+        if forget_fact_by_token(config.JOBS_DB_PATH, token):
+            await query.edit_message_text(
+                "Saved answer forgotten. Submitted applications are unchanged."
+            )
+        else:
+            await query.edit_message_text("That saved answer was already forgotten.")
         return
     if data.startswith(("atsapply:", "ashbyapply:")):
         prefix = data.split(":", 1)[1]
@@ -322,6 +587,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 config.APPLICATION_PROFILE_PATH,
                 config.ASHBY_BROWSER_PROFILE_PATH,
                 headless=config.ATS_BROWSER_HEADLESS,
+                answer_db_path=config.JOBS_DB_PATH,
             )
             if result.status == "submitted":
                 mark_job_sent(config.JOBS_DB_PATH, job["id"], result.url)
@@ -356,10 +622,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("This application is already sending or sent.")
             return
         try:
-            result_url = await submit_application(
+            submit_args = (
                 job["apply_url"], config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH, job["recruiter_message"],
             )
+            if job["contact_kind"] == "web":
+                result_url = await submit_application(
+                    *submit_args,
+                    answer_db_path=config.JOBS_DB_PATH,
+                    job_id=job["id"],
+                    company=job["company"],
+                )
+            else:
+                result_url = await submit_application(*submit_args)
             mark_job_sent(config.JOBS_DB_PATH, job["id"], 0)
         except Exception as exc:
             mark_job_send_failed(config.JOBS_DB_PATH, job["id"])
@@ -442,3 +717,4 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     await query.edit_message_text("Unknown action.")
+

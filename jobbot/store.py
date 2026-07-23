@@ -174,7 +174,8 @@ def claim_job_for_send(db_path: Path, job_id: str) -> bool:
     connection = sqlite3.connect(db_path)
     try:
         cursor = connection.execute(
-            "UPDATE jobs SET status='sending' WHERE id=? AND status IN ('parsed', 'send_failed')",
+            """UPDATE jobs SET status='sending'
+               WHERE id=? AND status IN ('parsed', 'send_failed', 'awaiting_answers')""",
             (job_id,),
         )
         connection.commit()
@@ -253,6 +254,19 @@ def claim_telegram_job_for_send(
         )
         connection.commit()
         return cursor.rowcount == 1, None, ""
+    finally:
+        connection.close()
+
+
+def mark_job_awaiting_answers(db_path: Path, job_id: str) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """UPDATE jobs SET status='awaiting_answers'
+               WHERE id=? AND status IN ('parsed', 'send_failed', 'awaiting_answers')""",
+            (job_id,),
+        )
+        connection.commit()
     finally:
         connection.close()
 
@@ -504,3 +518,4 @@ def mark_job_send_failed(db_path: Path, job_id: str) -> None:
         connection.commit()
     finally:
         connection.close()
+

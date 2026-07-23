@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from jobbot.form_answers import FormQuestion
 from jobbot.integrations.ashby import (
     AshbyError,
     fetch_ashby_posting,
@@ -34,6 +35,8 @@ class AtsPreflight:
     page: ParsedJobPage
     missing: tuple[str, ...]
     native: object
+    questions: tuple[FormQuestion, ...] = ()
+    reused: tuple[FormQuestion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,19 +72,31 @@ async def fetch_ats_page(url: str) -> ParsedJobPage:
     return replace(page, contact_kind="ats", contact_value=provider)
 
 
-async def preflight_ats_application(url: str, resume_path: Path, profile_path: Path) -> AtsPreflight:
+async def preflight_ats_application(
+    url: str,
+    resume_path: Path,
+    profile_path: Path,
+    *,
+    answer_db_path: Path | None = None,
+) -> AtsPreflight:
     provider = ats_provider(url)
     try:
         if provider == "ashby":
-            native = await preflight_ashby_application(url, resume_path, profile_path)
+            native = await preflight_ashby_application(
+                url, resume_path, profile_path, answer_db_path=answer_db_path
+            )
         elif provider == "greenhouse":
-            native = await preflight_greenhouse_application(url, resume_path, profile_path)
+            native = await preflight_greenhouse_application(
+                url, resume_path, profile_path, answer_db_path=answer_db_path
+            )
         else:
             raise AtsError("Unsupported ATS application URL")
     except (AshbyError, GreenhouseError) as exc:
         raise AtsError(str(exc)) from exc
     page = replace(native.posting.page, contact_kind="ats", contact_value=provider)
-    return AtsPreflight(provider, page, native.missing, native)
+    return AtsPreflight(
+        provider, page, native.missing, native, native.questions, native.reused
+    )
 
 
 def format_missing_questions(preflight: AtsPreflight) -> str:
@@ -90,15 +105,30 @@ def format_missing_questions(preflight: AtsPreflight) -> str:
     return format_greenhouse_missing(preflight.native)
 
 
-async def submit_ats_application(url: str, resume_path: Path, profile_path: Path, browser_profile_path: Path, *, headless: bool = True) -> AtsSubmissionResult:
+async def submit_ats_application(
+    url: str,
+    resume_path: Path,
+    profile_path: Path,
+    browser_profile_path: Path,
+    *,
+    headless: bool = True,
+    answer_db_path: Path | None = None,
+) -> AtsSubmissionResult:
     provider = ats_provider(url)
     try:
         if provider == "ashby":
-            result = await submit_ashby_application(url, resume_path, profile_path, browser_profile_path, headless=headless)
+            result = await submit_ashby_application(
+                url, resume_path, profile_path, browser_profile_path,
+                headless=headless, answer_db_path=answer_db_path,
+            )
         elif provider == "greenhouse":
-            result = await submit_greenhouse_application(url, resume_path, profile_path, browser_profile_path, headless=headless)
+            result = await submit_greenhouse_application(
+                url, resume_path, profile_path, browser_profile_path,
+                headless=headless, answer_db_path=answer_db_path,
+            )
         else:
             raise AtsError("Unsupported ATS application URL")
     except (AshbyError, GreenhouseError) as exc:
         raise AtsError(str(exc)) from exc
     return AtsSubmissionResult(result.status, result.url, result.detail)
+

@@ -10,7 +10,9 @@ It reads the public Ashby job/form contract, selects the existing local résumé
 
 ## Applicant profile
 
-Add standard values and explicit screening answers to the untracked `storage/applicant.json` file:
+`storage/jobs.db` is the runtime source of truth for applicant facts and form
+answers. On the first upgraded run, the bot imports the existing untracked
+`storage/applicant.json` once and leaves the file untouched:
 
 ```json
 {
@@ -33,7 +35,17 @@ Add standard values and explicit screening answers to the untracked `storage/app
 
 Reusable facts are matched semantically, so Ashby UUIDs and small wording changes do not matter. Source preferences are tried in order and only an option actually offered by the form is selected. `previous_employers: []` is an explicit statement that no listed employer applies; omitting the key leaves the answer unresolved.
 
-The `answers` object remains available for genuinely vacancy-specific questions and overrides semantic facts. Resume extraction is only a fallback for name, email, and phone; the private applicant profile is the source of truth for location, authorization, employment history, links, and screening preferences. The bot never infers work authorization, compensation, demographic data, or other screening answers.
+After migration, new missing answers are requested as one numbered Telegram
+batch. A valid reply saves the facts, rechecks the live form, and authorizes
+submission for that vacancy. The bot distinguishes authorization, sponsorship
+now, and sponsorship in the future, including questions with inverted wording.
+Country- and company-specific facts are scoped separately.
+
+The bot never infers work authorization, compensation, demographic data, or
+other screening answers. Optional structured screening questions may be
+answered with `Skip`. Submitted-answer messages include Forget buttons; these
+remove the selected fact for future applications without changing an existing
+submission.
 
 ## Submission and anti-automation
 
@@ -81,3 +93,4 @@ The smoke test reads the public contract only and never submits.
 ## Rollback
 
 Revert the Ashby commits and rebuild the container. Keep `storage/jobs.db`, `storage/applicant.json`, and the browser profile as private runtime data. Removing `storage/ashby-browser` signs out and resets the browser profile but is not required for code rollback.
+
