@@ -13,9 +13,17 @@ import httpx
 from bs4 import BeautifulSoup
 
 from jobbot.application import Vacancy
+from jobbot.form_answers import (
+    FormQuestion,
+    SKIPPED,
+    classify_question,
+    get_fact,
+    migrate_profile_json,
+    profile_document,
+)
 from jobbot.integrations.form_matching import best_field_label_match, best_submit_control_match, classify_form_submission
 from jobbot.integrations.job_page import ParsedJobPage, validate_public_url
-from jobbot.integrations.web_application import load_profile
+from jobbot.integrations.web_application import load_profile, load_profile_data
 
 _API = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?questions=true"
 _HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io", "job-boards.eu.greenhouse.io"}
@@ -47,6 +55,8 @@ class GreenhousePreflight:
     posting: GreenhousePosting
     submissions: dict[str, object]
     missing: tuple[str, ...]
+    questions: tuple[FormQuestion, ...] = ()
+    reused: tuple[FormQuestion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,25 +155,60 @@ def _profile_value(field: GreenhouseField, profile, raw: dict):
     return None
 
 
-async def preflight_greenhouse_application(url: str, resume_path: Path, profile_path: Path, *, transport: httpx.AsyncBaseTransport | None = None) -> GreenhousePreflight:
+async def preflight_greenhouse_application(
+    url: str,
+    resume_path: Path,
+    profile_path: Path,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    answer_db_path: Path | None = None,
+) -> GreenhousePreflight:
     if not resume_path.is_file():
         raise GreenhouseError(f"Resume is missing: {resume_path.name}")
     try:
-        raw = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
-    except (OSError, json.JSONDecodeError) as exc:
+        if answer_db_path is not None:
+            migrate_profile_json(answer_db_path, profile_path)
+            raw = profile_document(answer_db_path)
+            profile = load_profile_data(raw, resume_path)
+        else:
+            raw = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
+            profile = load_profile(profile_path, resume_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise GreenhouseError(f"Applicant profile is invalid: {exc}") from exc
-    profile = load_profile(profile_path, resume_path)
     posting = await fetch_greenhouse_posting(url, transport=transport)
     submissions: dict[str, object] = {}
     missing: list[str] = []
+    questions: list[FormQuestion] = []
+    reused: list[FormQuestion] = []
+    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    context = {
+        "job_id": str(posting.job_id),
+        "company": posting.page.vacancy.company,
+        "country": str(location.get("country") or ""),
+        "job_country": posting.page.vacancy.location,
+    }
     for field in posting.fields:
-        value = _profile_value(field, profile, raw)
+        question = classify_question(
+            "greenhouse", field.name, field.label, field.field_type,
+            field.options, field.required, context=context,
+        )
+        resolution = get_fact(answer_db_path, question) if answer_db_path is not None else None
+        if resolution and resolution.form_value == SKIPPED:
+            continue
+        if resolution:
+            reused.append(question)
+        value = resolution.form_value if resolution else _profile_value(field, profile, raw)
         if value in (None, "", []):
             if field.required:
                 missing.append(f"{field.label} [{field.name}]")
+                questions.append(question)
+            elif field.options or "select" in field.field_type.casefold():
+                questions.append(question)
             continue
         submissions[field.name] = value
-    return GreenhousePreflight(posting, submissions, tuple(missing))
+    return GreenhousePreflight(
+        posting, submissions, tuple(missing), tuple(questions), tuple(reused)
+    )
 
 
 def format_missing_questions(preflight: GreenhousePreflight) -> str:
@@ -241,8 +286,20 @@ async def _submit_with_playwright(preflight: GreenhousePreflight, resume_path: P
             await context.close()
 
 
-async def submit_greenhouse_application(url: str, resume_path: Path, profile_path: Path, browser_profile_path: Path, *, headless: bool = True, browser_submitter: BrowserSubmitter | None = None) -> GreenhouseSubmissionResult:
-    preflight = await preflight_greenhouse_application(url, resume_path, profile_path)
+async def submit_greenhouse_application(
+    url: str,
+    resume_path: Path,
+    profile_path: Path,
+    browser_profile_path: Path,
+    *,
+    headless: bool = True,
+    browser_submitter: BrowserSubmitter | None = None,
+    answer_db_path: Path | None = None,
+) -> GreenhouseSubmissionResult:
+    preflight = await preflight_greenhouse_application(
+        url, resume_path, profile_path, answer_db_path=answer_db_path
+    )
     if preflight.missing:
         raise GreenhouseError(format_missing_questions(preflight))
     return await (browser_submitter or _submit_with_playwright)(preflight, resume_path, browser_profile_path, headless)
+

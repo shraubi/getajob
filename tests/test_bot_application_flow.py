@@ -40,7 +40,9 @@ sys.modules.setdefault("storage", storage_module)
 sys.modules.setdefault("storage.state", storage_state_module)
 
 from jobbot import config
-from jobbot.handlers import _handle_token_free, handle_callback
+from jobbot.handlers import _handle_token_free, _try_handle_answer_message, handle_callback
+from jobbot.form_answers import FormQuestion, create_answer_batch, set_batch_message_id
+from jobbot.store import get_job, save_fetched_job
 from jobbot.telegram_queue import process_telegram_queue_once
 from jobbot.integrations.ats import AtsPreflight, AtsSubmissionResult
 from jobbot.integrations.hirify import Contact, DirectApplication
@@ -113,6 +115,55 @@ class FakeQuery:
 
 
 class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_numbered_answer_batch_persists_and_submits_immediately(self):
+        url = "https://jobs.ashbyhq.com/example/11111111-1111-1111-1111-111111111111"
+        vacancy = Vacancy(
+            title="Python Engineer", company="Example",
+            description="Python backend engineering role " * 5, url=url,
+        )
+        page = ParsedJobPage(
+            vacancy, "ashby_application_form", url + "/application", url,
+            contact_kind="ats", contact_value="ashby",
+        )
+        question = FormQuestion(
+            "ashby", "sponsorship", "Will you require sponsorship?", "Boolean",
+            canonical_fact="work.requires_sponsorship_now",
+            scope_type="job", scope_value="111",
+            sensitive=True,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resume = root / "backend.pdf"
+            resume.write_bytes(b"pdf")
+            profile = root / "applicant.json"
+            profile.write_text("{}", encoding="utf-8")
+            db_path = root / "jobs.db"
+            job_id = save_fetched_job(db_path, page, "backend_python", resume.name)
+            batch_id = create_answer_batch(db_path, job_id, 1, (question,))
+            set_batch_message_id(db_path, batch_id, 77)
+            bot = FakeBot()
+            message = SimpleNamespace(
+                text="1. No", caption=None,
+                chat=SimpleNamespace(id=1),
+                reply_to_message=SimpleNamespace(message_id=77),
+            )
+            result = AtsSubmissionResult("submitted", url + "/application/success", "ok")
+            with (
+                patch("jobbot.handlers._preflight_saved_job", new=AsyncMock(return_value=())),
+                patch("jobbot.handlers.submit_ats_application", new=AsyncMock(return_value=result)) as submit,
+                patch.object(config, "JOBS_DB_PATH", db_path),
+                patch.object(config, "RESUME_DIR", root),
+                patch.object(config, "APPLICATION_PROFILE_PATH", profile),
+                patch.object(config, "ASHBY_BROWSER_PROFILE_PATH", root / "browser"),
+            ):
+                handled = await _try_handle_answer_message(
+                    SimpleNamespace(message=message), SimpleNamespace(bot=bot)
+                )
+            self.assertTrue(handled)
+            submit.assert_awaited_once()
+            self.assertEqual(get_job(db_path, job_id)["status"], "sent")
+            self.assertIn("Application submitted", bot.messages[-1]["text"])
+
     async def test_email_contact_has_action_button(self):
         url = "https://hirify.me/jobs/740343-ai-engineer-applied-ai-engineer-python"
         vacancy = Vacancy(
@@ -387,3 +438,4 @@ class BotApplicationFlowTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

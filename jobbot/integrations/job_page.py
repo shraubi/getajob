@@ -222,7 +222,14 @@ def parse_job_html(html: str, page_url: str) -> ParsedJobPage:
     apply_url, has_form = _application_target(soup, page_url)
     category = "application_form" if has_form else "structured_job_page" if posting else "job_page_with_apply_link" if apply_url else "job_page"
     vacancy = Vacancy(title=title[:160], company=company[:120], description=description[:20_000], url=page_url)
-    return ParsedJobPage(vacancy=vacancy, source_category=category, apply_url=apply_url, fetched_url=page_url)
+    return ParsedJobPage(
+        vacancy=vacancy,
+        source_category=category,
+        apply_url=apply_url,
+        fetched_url=page_url,
+        contact_kind="web" if has_form else "",
+        contact_value="html_form" if has_form else "",
+    )
 
 
 async def fetch_job_from_message(message: str) -> ParsedJobPage:
@@ -263,3 +270,4 @@ async def resolve_application_url(
         current = target
         last = target
     return last
+

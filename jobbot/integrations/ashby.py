@@ -22,7 +22,15 @@ from jobbot.integrations.form_matching import (
     normalize_field_label,
 )
 from jobbot.integrations.job_page import ParsedJobPage, validate_public_url
-from jobbot.integrations.web_application import load_profile
+from jobbot.form_answers import (
+    FormQuestion,
+    SKIPPED,
+    classify_question,
+    get_fact,
+    migrate_profile_json,
+    profile_document,
+)
+from jobbot.integrations.web_application import load_profile, load_profile_data
 
 _GRAPHQL_URL = "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobPosting"
 _ASHBY_HOST = "jobs.ashbyhq.com"
@@ -143,6 +151,8 @@ class AshbyPreflight:
     posting: AshbyPosting
     submissions: dict[str, object]
     missing: tuple[str, ...]
+    questions: tuple[FormQuestion, ...] = ()
+    reused: tuple[FormQuestion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -450,6 +460,7 @@ async def preflight_ashby_application(
     profile_path: Path,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    answer_db_path: Path | None = None,
 ) -> AshbyPreflight:
     if not resume_path.is_file():
         raise AshbyError(f"Resume is missing: {resume_path.name}")
@@ -457,14 +468,37 @@ async def preflight_ashby_application(
         raise AshbyError("Resume exceeds Ashby's 50 MB upload limit")
     posting = await fetch_ashby_posting(url, transport=transport)
     try:
-        raw = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
-    except (OSError, json.JSONDecodeError) as exc:
+        if answer_db_path is not None:
+            migrate_profile_json(answer_db_path, profile_path)
+            raw = profile_document(answer_db_path)
+            profile = load_profile_data(raw, resume_path)
+        else:
+            raw = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
+            profile = load_profile(profile_path, resume_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise AshbyError(f"Applicant profile is invalid: {exc}") from exc
-    profile = load_profile(profile_path, resume_path)
     submissions: dict[str, object] = {}
     missing: list[str] = []
+    questions: list[FormQuestion] = []
+    reused: list[FormQuestion] = []
+    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    question_context = {
+        "job_id": posting.job_posting_id,
+        "company": posting.page.vacancy.company,
+        "country": str(location.get("country") or ""),
+        "job_country": posting.page.vacancy.location,
+    }
     for field in posting.fields:
-        value = _answer_lookup(raw, field)
+        question = classify_question(
+            "ashby", field.path, field.title, field.field_type, field.options,
+            field.required, context=question_context,
+        )
+        resolution = get_fact(answer_db_path, question) if answer_db_path is not None else None
+        if resolution and resolution.form_value == SKIPPED:
+            continue
+        if resolution:
+            reused.append(question)
+        value = resolution.form_value if resolution else _answer_lookup(raw, field)
         if value is None:
             value = _standard_value(field, raw, profile)
         if value is None:
@@ -473,17 +507,23 @@ async def preflight_ashby_application(
         if value is None or value == "" or value == []:
             if field.required:
                 missing.append(f"{field.title} [{field.path}]")
+                questions.append(question)
+            elif field.options or field.field_type in {"Boolean", "Select", "MultiValueSelect"}:
+                questions.append(question)
             continue
         if field.options:
             supplied = value if isinstance(value, list) else [value]
             if any(str(item) not in field.options for item in supplied):
                 if field.required:
+                    questions.append(question)
                     missing.append(
                         f"{field.title} [{field.path}] — choose one of: {', '.join(field.options)}"
                     )
                 continue
         submissions[field.path] = value
-    return AshbyPreflight(posting, submissions, tuple(missing))
+    return AshbyPreflight(
+        posting, submissions, tuple(missing), tuple(questions), tuple(reused)
+    )
 
 
 def format_missing_questions(preflight: AshbyPreflight) -> str:
@@ -957,9 +997,13 @@ async def submit_ashby_application(
     *,
     headless: bool = True,
     browser_submitter: BrowserSubmitter | None = None,
+    answer_db_path: Path | None = None,
 ) -> AshbySubmissionResult:
-    preflight = await preflight_ashby_application(url, resume_path, profile_path)
+    preflight = await preflight_ashby_application(
+        url, resume_path, profile_path, answer_db_path=answer_db_path
+    )
     if preflight.missing:
         raise AshbyError(format_missing_questions(preflight))
     submitter = browser_submitter or _submit_with_playwright
     return await submitter(preflight, resume_path, browser_profile_path, headless)
+

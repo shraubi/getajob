@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -14,6 +14,15 @@ from bs4 import BeautifulSoup
 
 from jobbot.integrations.job_page import validate_public_url
 from jobbot.application import extract_resume_text
+from jobbot.form_answers import (
+    FormQuestion,
+    SKIPPED,
+    classify_question,
+    deduplicate_questions,
+    get_fact,
+    migrate_profile_json,
+    profile_document,
+)
 
 _MAX_PAGE_BYTES = 2_000_000
 _SUCCESS_RE = re.compile(
@@ -36,6 +45,12 @@ class ApplicantProfile:
     answers: dict[str, str] | None = None
 
 
+@dataclass(frozen=True)
+class WebApplicationPreflight:
+    questions: tuple[FormQuestion, ...]
+    reused: tuple[FormQuestion, ...] = ()
+
+
 def load_profile(path: Path, resume_path: Path) -> ApplicantProfile:
     raw = {}
     if path.is_file():
@@ -43,6 +58,11 @@ def load_profile(path: Path, resume_path: Path) -> ApplicantProfile:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise WebApplicationError(f"Applicant profile is invalid: {exc}") from exc
+    return load_profile_data(raw, resume_path)
+
+
+def load_profile_data(raw: dict, resume_path: Path) -> ApplicantProfile:
+    """Build the standard profile from an already-loaded trusted document."""
     try:
         resume_text = extract_resume_text(resume_path)
     except Exception:
@@ -75,6 +95,96 @@ def _profile_value(tag, profile: ApplicantProfile) -> str:
     if any(marker in key for marker in ("phone", "tel", "mobile")) or tag.get("type") == "tel":
         return profile.phone
     return ""
+
+
+def _field_label(soup: BeautifulSoup, tag, name: str) -> str:
+    identifier = str(tag.get("id") or "")
+    if identifier:
+        label = soup.find("label", attrs={"for": identifier})
+        if label:
+            return label.get_text(" ", strip=True)
+    parent = tag.find_parent("label")
+    if parent:
+        return parent.get_text(" ", strip=True)
+    return str(tag.get("aria-label") or tag.get("placeholder") or name).strip()
+
+
+def _resolved_form_profile(
+    html: str,
+    page_url: str,
+    profile: ApplicantProfile,
+    db_path: Path,
+    *,
+    job_id: str = "",
+    company: str = "",
+) -> tuple[ApplicantProfile, tuple[FormQuestion, ...], tuple[FormQuestion, ...]]:
+    soup = BeautifulSoup(html, "html.parser")
+    form = next((item for item in soup.find_all("form") if item.find("input", attrs={"type": "file"})), None)
+    if form is None:
+        raise WebApplicationError("No resume application form was found")
+    answers = dict(profile.answers or {})
+    missing: list[FormQuestion] = []
+    reused: list[FormQuestion] = []
+    radio_groups: dict[str, list] = {}
+    for tag in form.find_all(["input", "textarea", "select"]):
+        name = str(tag.get("name") or "").strip()
+        if not name or tag.has_attr("disabled"):
+            continue
+        kind = str(tag.get("type", tag.name)).casefold()
+        if kind == "radio":
+            radio_groups.setdefault(name, []).append(tag)
+            continue
+        if kind in {"hidden", "file", "submit", "button", "reset", "image"}:
+            continue
+        if answers.get(name) or _profile_value(tag, profile):
+            continue
+        options: tuple[str, ...] = ()
+        if tag.name == "select":
+            options = tuple(
+                str(option.get("value") or option.get_text(" ", strip=True))
+                for option in tag.find_all("option")
+                if str(option.get("value") or "").strip()
+            )
+        label = _field_label(soup, tag, name)
+        required = tag.has_attr("required")
+        structured_optional = kind == "checkbox" or bool(options)
+        if not required and not structured_optional:
+            continue
+        question = classify_question(
+            "web", name, label, kind, options, required,
+            context={"job_id": job_id, "company": company},
+        )
+        resolution = get_fact(db_path, question)
+        if resolution:
+            if resolution.form_value == SKIPPED:
+                continue
+            answers[name] = str(resolution.form_value)
+            reused.append(question)
+        else:
+            missing.append(question)
+    for name, tags in radio_groups.items():
+        if answers.get(name):
+            continue
+        options = tuple(str(tag.get("value", "on")) for tag in tags)
+        required = any(tag.has_attr("required") for tag in tags)
+        label = _field_label(soup, tags[0], name)
+        question = classify_question(
+            "web", name, label, "radio", options, required,
+            context={"job_id": job_id, "company": company},
+        )
+        resolution = get_fact(db_path, question)
+        if resolution:
+            if resolution.form_value == SKIPPED:
+                continue
+            answers[name] = str(resolution.form_value)
+            reused.append(question)
+        elif required or options:
+            missing.append(question)
+    return (
+        replace(profile, answers=answers),
+        deduplicate_questions(missing),
+        deduplicate_questions(reused),
+    )
 
 
 def _searchable_text(text: str) -> str:
@@ -156,6 +266,36 @@ async def _read_response(response: httpx.Response) -> str:
     return bytes(body).decode(response.encoding or "utf-8", errors="replace")
 
 
+async def preflight_application(
+    page_url: str,
+    resume_path: Path,
+    profile_path: Path,
+    answer_db_path: Path,
+    *,
+    job_id: str = "",
+    company: str = "",
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> WebApplicationPreflight:
+    if not resume_path.is_file():
+        raise WebApplicationError(f"Resume is missing: {resume_path.name}")
+    try:
+        migrate_profile_json(answer_db_path, profile_path)
+        raw = profile_document(answer_db_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise WebApplicationError(f"Applicant profile is invalid: {exc}") from exc
+    profile = load_profile_data(raw, resume_path)
+    headers = {"User-Agent": "getajob/1.0", "Accept": "text/html,application/xhtml+xml"}
+    async with httpx.AsyncClient(headers=headers, timeout=20.0, follow_redirects=True, transport=transport) as client:
+        await validate_public_url(page_url)
+        async with client.stream("GET", page_url) as response:
+            response.raise_for_status()
+            html = await _read_response(response)
+    _resolved, questions, reused = _resolved_form_profile(
+        html, page_url, profile, answer_db_path, job_id=job_id, company=company
+    )
+    return WebApplicationPreflight(questions, reused)
+
+
 async def submit_application(
     page_url: str,
     resume_path: Path,
@@ -163,6 +303,9 @@ async def submit_application(
     message: str = "",
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    answer_db_path: Path | None = None,
+    job_id: str = "",
+    company: str = "",
 ) -> str:
     host = (urlparse(page_url).hostname or "").casefold()
     if host == "getmatch.ru" or host.endswith(".getmatch.ru"):
@@ -173,7 +316,14 @@ async def submit_application(
         raise WebApplicationError(f"Resume is missing: {resume_path.name}")
     if resume_path.stat().st_size > 2_000_000:
         raise WebApplicationError("Resume exceeds the 2 MB application limit")
-    profile = load_profile(profile_path, resume_path)
+    if answer_db_path is not None:
+        try:
+            migrate_profile_json(answer_db_path, profile_path)
+            profile = load_profile_data(profile_document(answer_db_path), resume_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise WebApplicationError(f"Applicant profile is invalid: {exc}") from exc
+    else:
+        profile = load_profile(profile_path, resume_path)
     headers = {"User-Agent": "getajob/1.0", "Accept": "text/html,application/xhtml+xml"}
     async def validate_request(request: httpx.Request) -> None:
         await validate_public_url(str(request.url))
@@ -186,6 +336,12 @@ async def submit_application(
         async with client.stream("GET", page_url) as response:
             response.raise_for_status()
             html = await _read_response(response)
+        if answer_db_path is not None:
+            profile, questions, _reused = _resolved_form_profile(
+                html, page_url, profile, answer_db_path, job_id=job_id, company=company
+            )
+            if questions:
+                raise WebApplicationError("Application answers changed; preflight is required")
         action, data, file_field = build_form_payload(html, page_url, profile, message)
         await validate_public_url(action)
         with resume_path.open("rb") as resume:
@@ -202,3 +358,4 @@ async def submit_application(
         if not confirmed and not redirected_to_confirmation:
             raise WebApplicationError("The application form was returned without a success confirmation")
         return str(response.url)
+
