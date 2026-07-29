@@ -1,21 +1,26 @@
-"""One-time visible HelloWork login that exports Playwright storage state."""
+"""Create a transferable HelloWork browser session using a local visible browser.
 
+This file is intentionally standalone: it does not import jobbot configuration and
+can be downloaded and run without cloning the repository.
+"""
+
+import argparse
 import asyncio
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from jobbot import config
+async def create_session(target: Path) -> None:
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise SystemExit(
+            "Playwright is required. Run: py -m pip install playwright && "
+            "py -m playwright install chromium"
+        ) from exc
 
-
-async def main() -> None:
-    from playwright.async_api import async_playwright
-
-    target = config.HELLOWORK_AUTH_STATE_PATH
+    target = target.expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=False)
         context = await browser.new_context()
@@ -23,12 +28,26 @@ async def main() -> None:
         await page.goto("https://www.hellowork.com/fr-fr/candidat/connexion.html")
         await asyncio.to_thread(
             input,
-            "Sign in to HelloWork in the browser, complete any verification, then press Enter here: ",
+            "Sign in to HelloWork in the browser, complete any verification, "
+            "then press Enter here: ",
         )
         await context.storage_state(path=str(target))
         await browser.close()
+
     print(f"HelloWork authentication saved to {target}")
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("hellowork-auth.json"),
+        help="Session file to create (default: ./hellowork-auth.json)",
+    )
+    args = parser.parse_args()
+    asyncio.run(create_session(args.output))
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
