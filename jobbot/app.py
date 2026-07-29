@@ -10,6 +10,7 @@ from jobbot import config
 from jobbot.handlers import handle_callback, handle_vacancy_message
 from jobbot.logging_config import configure_logging
 from jobbot.telegram_queue import telegram_queue_worker
+from jobbot.email_ingest import hellowork_email_worker
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +27,23 @@ async def _mark_ready(application: Application) -> None:
             telegram_queue_worker(application.bot),
             name="telegram-send-queue",
         )
+    if config.HELLOWORK_EMAIL_INGEST_ENABLED:
+        application.bot_data["hellowork_email_task"] = application.create_task(
+            hellowork_email_worker(application.bot),
+            name="hellowork-email-intake",
+        )
     config.BOT_READY_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.BOT_READY_FILE.write_text("ready\n", encoding="utf-8")
     logger.info("Telegram polling initialized as @%s", application.bot.username)
 
 
 async def _mark_stopped(application: Application) -> None:
-    task = application.bot_data.pop("telegram_queue_task", None)
-    if task:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+    for key in ("telegram_queue_task", "hellowork_email_task"):
+        task = application.bot_data.pop(key, None)
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
     _clear_ready_file()
 
 

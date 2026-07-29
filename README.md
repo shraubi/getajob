@@ -5,6 +5,7 @@ A deterministic Telegram bot for turning job posts into safe, resume-aware appli
 ## What it does
 
 1. Accepts pasted text or a public job URL in Telegram.
+   It can also ingest sender-filtered HelloWork alerts from a dedicated Gmail inbox.
 2. Parses and classifies the vacancy with deterministic rules.
 3. Selects the best PDF from `data/resumes/`.
 4. Builds a recruiter message and an application preview.
