@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -8,6 +9,19 @@ load_dotenv()
 
 def _bool_env(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).casefold() in {"1", "true", "yes", "on"}
+
+
+def _hellowork_email_settings() -> dict:
+    path = Path("storage/hellowork-email.json")
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid HelloWork email settings file: {path}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Invalid HelloWork email settings file: {path}")
+    return value
 
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -34,17 +48,18 @@ TELEGRAM_PEER_FLOOD_COOLDOWN_HOURS = int(os.environ.get("TELEGRAM_PEER_FLOOD_COO
 TELEGRAM_QUEUE_POLL_SECONDS = float(os.environ.get("TELEGRAM_QUEUE_POLL_SECONDS", "5"))
 APPLICATION_PROFILE_PATH = Path(os.environ.get("APPLICATION_PROFILE_PATH", "storage/applicant.json"))
 ASHBY_BROWSER_PROFILE_PATH = Path(os.environ.get("ASHBY_BROWSER_PROFILE_PATH", "storage/ashby-browser"))
-HELLOWORK_AUTH_STATE_PATH = Path(os.environ.get("HELLOWORK_AUTH_STATE_PATH", "storage/hellowork-auth.json"))
-HELLOWORK_EMAIL_INGEST_ENABLED = _bool_env("HELLOWORK_EMAIL_INGEST_ENABLED", False)
-HELLOWORK_IMAP_HOST = os.environ.get("HELLOWORK_IMAP_HOST", "imap.gmail.com")
-HELLOWORK_IMAP_PORT = int(os.environ.get("HELLOWORK_IMAP_PORT", "993"))
-HELLOWORK_IMAP_USERNAME = os.environ.get("HELLOWORK_IMAP_USERNAME", "")
-HELLOWORK_IMAP_APP_PASSWORD = os.environ.get("HELLOWORK_IMAP_APP_PASSWORD", "")
-HELLOWORK_IMAP_MAILBOX = os.environ.get("HELLOWORK_IMAP_MAILBOX", "INBOX")
-HELLOWORK_IMAP_POLL_SECONDS = float(os.environ.get("HELLOWORK_IMAP_POLL_SECONDS", "60"))
-HELLOWORK_EMAIL_ALLOWED_SENDER = os.environ.get(
-    "HELLOWORK_EMAIL_ALLOWED_SENDER", "notification@emails.hellowork.com"
+HELLOWORK_AUTH_STATE_PATH = Path("storage/hellowork-auth.json")
+_HELLOWORK_EMAIL = _hellowork_email_settings()
+HELLOWORK_EMAIL_INGEST_ENABLED = bool(_HELLOWORK_EMAIL.get("enabled", False))
+HELLOWORK_IMAP_HOST = "imap.gmail.com"
+HELLOWORK_IMAP_PORT = 993
+HELLOWORK_IMAP_USERNAME = str(_HELLOWORK_EMAIL.get("username", "")).strip()
+HELLOWORK_IMAP_APP_PASSWORD = "".join(
+    str(_HELLOWORK_EMAIL.get("app_password", "")).split()
 )
+HELLOWORK_IMAP_MAILBOX = "INBOX"
+HELLOWORK_IMAP_POLL_SECONDS = 60.0
+HELLOWORK_EMAIL_ALLOWED_SENDER = "notification@emails.hellowork.com"
 ATS_BROWSER_HEADLESS = _bool_env(
     "ATS_BROWSER_HEADLESS",
     _bool_env("ASHBY_BROWSER_HEADLESS", True),

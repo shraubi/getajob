@@ -11,7 +11,6 @@ services:
       BOT_READY_FILE: /tmp/jobbot-ready
       PLAYWRIGHT_BROWSERS_PATH: /app/storage/playwright
       ATS_BROWSER_HEADLESS: "true"
-      HELLOWORK_AUTH_STATE_PATH: /app/storage/hellowork-auth.json
     volumes:
       - ${RESUME_HOST_DIR:-./data/resumes}:/app/data/resumes:ro
       - ${DATA_DIR:-./storage}:/app/storage
