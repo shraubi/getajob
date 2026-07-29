@@ -15,6 +15,13 @@ Telegram input
   -> Hirify, Telegram, or conventional web-form integration
 ```
 
+HelloWork has an additional least-privilege path: a Gmail sender filter forwards
+alerts into a dedicated mailbox, the IMAP worker validates the original
+HelloWork DKIM/campaign headers, resolves only allowlisted tracking redirects,
+and persists canonical offer IDs before marking mail read. A serialized queue
+then applies through the same job, answer, and idempotency stores. The primary
+mailbox is never exposed to the bot, and raw MIME content is never persisted.
+
 ## Boundaries
 
 - `jobbot/application.py`: domain parsing, resume extraction, matching, and draft rendering.

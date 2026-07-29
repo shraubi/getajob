@@ -420,7 +420,11 @@ async def _submit_answered_job(
                 job["page_url"],
                 config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH,
-                config.ASHBY_BROWSER_PROFILE_PATH,
+                (
+                    config.HELLOWORK_AUTH_STATE_PATH
+                    if job["contact_value"] == "hellowork"
+                    else config.ASHBY_BROWSER_PROFILE_PATH
+                ),
                 headless=config.ATS_BROWSER_HEADLESS,
                 answer_db_path=config.JOBS_DB_PATH,
             )
@@ -585,7 +589,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 job["page_url"],
                 config.RESUME_DIR / job["resume_name"],
                 config.APPLICATION_PROFILE_PATH,
-                config.ASHBY_BROWSER_PROFILE_PATH,
+                (
+                    config.HELLOWORK_AUTH_STATE_PATH
+                    if job["contact_value"] == "hellowork"
+                    else config.ASHBY_BROWSER_PROFILE_PATH
+                ),
                 headless=config.ATS_BROWSER_HEADLESS,
                 answer_db_path=config.JOBS_DB_PATH,
             )

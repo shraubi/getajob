@@ -5,6 +5,7 @@ A deterministic Telegram bot for turning job posts into safe, resume-aware appli
 ## What it does
 
 1. Accepts pasted text or a public job URL in Telegram.
+   It can also ingest sender-filtered HelloWork alerts from a dedicated Gmail inbox.
 2. Parses and classifies the vacancy with deterministic rules.
 3. Selects the best PDF from `data/resumes/`.
 4. Builds a recruiter message and an application preview.
@@ -58,5 +59,18 @@ Put private resume PDFs in `data/resumes/`. They and all runtime state under `st
 - Deployment resets tracked VM files to GitHub `main`; runtime data remains untracked.
 
 See [architecture](docs/architecture.md), [operations](docs/operations.md), [Ashby applications](docs/ashby.md), and the [legacy archive](archive/legacy_llm/README.md).
+
+## HelloWork email intake
+
+Create a dedicated Gmail account for the bot, enable 2-Step Verification, and
+generate an app password. In the primary Gmail account, verify the dedicated
+address under Forwarding and create a filter for
+`from:notification@emails.hellowork.com` that forwards matching messages while
+keeping the original copy. Set the `HELLOWORK_IMAP_*` variables and enable
+`HELLOWORK_EMAIL_INGEST_ENABLED`.
+
+Before enabling automatic applications, run `python scripts/auth_hellowork.py`
+once in a visible desktop session. Sign in manually and complete any OTP or
+CAPTCHA; the script stores only Playwright session state under `storage/`.
 
 Ralph runs as a separate Compose service, continuously reviews Jobbot's structured event journal, and can publish deduplicated GitHub issues for actionable findings. Follow it with `docker compose logs -f ralph`. The older Telethon history reviewer remains available as `docker compose exec -T bot python -m ralph.review_chat`.

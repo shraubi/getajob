@@ -562,6 +562,8 @@ def profile_document(db_path: Path) -> dict[str, Any]:
         value = json.loads(encoded)
         if fact_key.startswith("profile.location."):
             raw["location"][fact_key.rsplit(".", 1)[1]] = value
+        elif fact_key.startswith("profile.answer."):
+            raw["answers"][fact_key.removeprefix("profile.answer.")] = value
         elif fact_key.startswith("profile."):
             raw[fact_key.split(".", 1)[1]] = value
         elif fact_key.startswith("link."):
