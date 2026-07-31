@@ -1,7 +1,9 @@
 import asyncio
 import tempfile
 import unittest
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -54,6 +56,25 @@ class HelloWorkEmailTests(unittest.IsolatedAsyncioTestCase):
         raw = alert_bytes().replace(b"dkim=pass", b"dkim=fail")
         with self.assertRaises(HelloWorkEmailError):
             parse_hellowork_alert(raw)
+
+    async def test_accepts_authenticated_sender_from_hellowork_mail_domain(self):
+        alert = parse_hellowork_alert(
+            alert_bytes(sender="HelloWork <jobs@emails.hellowork.com>")
+        )
+        self.assertEqual(len(alert.tracking_urls), 10)
+
+    async def test_accepts_manual_forward_as_attachment(self):
+        original = BytesParser(policy=policy.default).parsebytes(alert_bytes())
+        forwarded = EmailMessage()
+        forwarded["From"] = "candidate@example.com"
+        forwarded["To"] = "bot@example.com"
+        forwarded["Subject"] = "Fwd: HelloWork jobs"
+        forwarded.set_content("Original HelloWork alert attached.")
+        forwarded.add_attachment(original)
+
+        alert = parse_hellowork_alert(forwarded.as_bytes())
+
+        self.assertEqual(len(alert.tracking_urls), 10)
 
     async def test_tracking_redirect_must_finish_at_canonical_offer(self):
         def handler(request):
