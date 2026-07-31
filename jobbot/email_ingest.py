@@ -58,13 +58,15 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
     inbox = inbox or _inbox()
     uid_validity, messages = await asyncio.to_thread(inbox.unread)
     handled = 0
+    rejected: dict[str, int] = {}
     mailbox_key = config.HELLOWORK_IMAP_USERNAME.casefold()
     for item in messages:
         parsed = BytesParser(policy=policy.default).parsebytes(item.raw)
         message_id = str(parsed.get("Message-ID", ""))
         try:
             alert = parse_hellowork_alert(
-                item.raw, allowed_sender=config.HELLOWORK_EMAIL_ALLOWED_SENDER
+                item.raw,
+                allowed_sender_domain=config.HELLOWORK_EMAIL_ALLOWED_SENDER_DOMAIN,
             )
             offers = await resolve_alert_offers(alert)
             if not offers:
@@ -109,7 +111,13 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
             await asyncio.to_thread(inbox.mark_seen, item.uid)
             handled += 1
             if inserted:
-                await _notify(bot, f"HelloWork email rejected: {exc}")
+                reason = str(exc)
+                rejected[reason] = rejected.get(reason, 0) + 1
+    if rejected:
+        summary = ", ".join(
+            f"{count} x {reason}" for reason, count in sorted(rejected.items())
+        )
+        await _notify(bot, f"HelloWork emails rejected: {summary}")
     return handled
 
 
