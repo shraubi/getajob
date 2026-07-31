@@ -64,10 +64,7 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
         parsed = BytesParser(policy=policy.default).parsebytes(item.raw)
         message_id = str(parsed.get("Message-ID", ""))
         try:
-            alert = parse_hellowork_alert(
-                item.raw,
-                allowed_sender_domain=config.HELLOWORK_EMAIL_ALLOWED_SENDER_DOMAIN,
-            )
+            alert = parse_hellowork_alert(item.raw)
             offers = await resolve_alert_offers(alert)
             if not offers:
                 raise HelloWorkEmailError("no valid HelloWork offer links found")

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
-from email.utils import parseaddr
 from typing import Callable
 from urllib.parse import urljoin, urlparse
 
@@ -17,7 +16,7 @@ from bs4 import BeautifulSoup
 
 from jobbot.integrations.job_page import validate_public_url
 
-_SENDER_DOMAIN = "emails.hellowork.com"
+
 _TRACKING_HOST = "emails.hellowork.com"
 _OFFER_RE = re.compile(r"^/fr-fr/emplois/(?P<id>[0-9]+)\.html/?$")
 _MAX_MESSAGE_BYTES = 5_000_000
@@ -49,42 +48,11 @@ def _iter_messages(message: Message):
                     yield from _iter_messages(nested)
 
 
-def parse_hellowork_alert(
-    raw: bytes,
-    *,
-    allowed_sender_domain: str = _SENDER_DOMAIN,
-) -> HelloWorkAlert:
+def parse_hellowork_alert(raw: bytes) -> HelloWorkAlert:
     if len(raw) > _MAX_MESSAGE_BYTES:
         raise HelloWorkEmailError("message exceeds the 5 MB limit")
     message = BytesParser(policy=policy.default).parsebytes(raw)
     candidates = tuple(_iter_messages(message))
-    sender_domain = allowed_sender_domain.casefold().lstrip("@")
-    original = next(
-        (
-            item
-            for item in candidates
-            if parseaddr(str(item.get("From", "")))[1]
-            .casefold()
-            .endswith(f"@{sender_domain}")
-        ),
-        None,
-    )
-    if original is None:
-        raise HelloWorkEmailError("unexpected sender")
-    auth = " ".join(
-        str(value) for item in candidates
-        for header in ("Authentication-Results", "ARC-Authentication-Results")
-        for value in item.get_all(header, [])
-    ).casefold()
-    if not (
-        "dkim=pass" in auth
-        and ("header.i=@emails.hellowork.com" in auth or "header.d=emails.hellowork.com" in auth)
-    ):
-        raise HelloWorkEmailError("HelloWork DKIM authentication is missing")
-    list_id = str(original.get("List-ID", "")).casefold()
-    campaign = str(original.get("X-Rj-Cmp", "")).casefold()
-    if "pushoffre" not in list_id and "pushoffre" not in campaign:
-        raise HelloWorkEmailError("unexpected HelloWork notification type")
 
     links: list[str] = []
     seen: set[str] = set()
@@ -112,7 +80,7 @@ def parse_hellowork_alert(
                     links.append(value)
     if not links:
         raise HelloWorkEmailError("no HelloWork tracking links found")
-    return HelloWorkAlert(str(original.get("Message-ID", "")), tuple(links))
+    return HelloWorkAlert(str(message.get("Message-ID", "")), tuple(links))
 
 
 async def resolve_offer_url(

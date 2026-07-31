@@ -50,17 +50,13 @@ class HelloWorkEmailTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(offers), 10)
         self.assertEqual(offers[0][0], "1")
 
-    async def test_rejects_spoofed_or_unauthenticated_sender(self):
-        with self.assertRaises(HelloWorkEmailError):
-            parse_hellowork_alert(alert_bytes(sender="attacker@example.com"))
+    async def test_accepts_forward_from_personal_sender_without_original_auth(self):
         raw = alert_bytes().replace(b"dkim=pass", b"dkim=fail")
-        with self.assertRaises(HelloWorkEmailError):
-            parse_hellowork_alert(raw)
-
-    async def test_accepts_authenticated_sender_from_hellowork_mail_domain(self):
-        alert = parse_hellowork_alert(
-            alert_bytes(sender="HelloWork <jobs@emails.hellowork.com>")
+        raw = raw.replace(
+            b"Hellowork notifications <notification@emails.hellowork.com>",
+            b"Candidate <candidate@example.com>",
         )
+        alert = parse_hellowork_alert(raw)
         self.assertEqual(len(alert.tracking_urls), 10)
 
     async def test_accepts_manual_forward_as_attachment(self):
