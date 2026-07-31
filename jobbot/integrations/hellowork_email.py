@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 
 from jobbot.integrations.job_page import validate_public_url
 
-_SENDER = "notification@emails.hellowork.com"
+_SENDER_DOMAIN = "emails.hellowork.com"
 _TRACKING_HOST = "emails.hellowork.com"
 _OFFER_RE = re.compile(r"^/fr-fr/emplois/(?P<id>[0-9]+)\.html/?$")
 _MAX_MESSAGE_BYTES = 5_000_000
@@ -49,15 +49,23 @@ def _iter_messages(message: Message):
                     yield from _iter_messages(nested)
 
 
-def parse_hellowork_alert(raw: bytes, *, allowed_sender: str = _SENDER) -> HelloWorkAlert:
+def parse_hellowork_alert(
+    raw: bytes,
+    *,
+    allowed_sender_domain: str = _SENDER_DOMAIN,
+) -> HelloWorkAlert:
     if len(raw) > _MAX_MESSAGE_BYTES:
         raise HelloWorkEmailError("message exceeds the 5 MB limit")
     message = BytesParser(policy=policy.default).parsebytes(raw)
     candidates = tuple(_iter_messages(message))
+    sender_domain = allowed_sender_domain.casefold().lstrip("@")
     original = next(
         (
-            item for item in candidates
-            if parseaddr(str(item.get("From", "")))[1].casefold() == allowed_sender.casefold()
+            item
+            for item in candidates
+            if parseaddr(str(item.get("From", "")))[1]
+            .casefold()
+            .endswith(f"@{sender_domain}")
         ),
         None,
     )
