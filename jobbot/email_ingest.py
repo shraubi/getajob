@@ -11,9 +11,12 @@ from jobbot import config
 from jobbot.application import ResumeNotFoundError, UnknownDirectionError, build_application_for_vacancy
 from jobbot.email_store import (
     claim_next_offer,
+    close_stale_rejected_emails,
     finish_offer,
+    mark_replay_unavailable,
     record_email_offers,
     record_rejected_email,
+    replayable_rejected_uids,
 )
 from jobbot.form_answers import FormQuestion, create_answer_batch, set_batch_message_id
 from jobbot.integrations.ats import (
@@ -39,6 +42,9 @@ from jobbot.store import (
 
 logger = logging.getLogger(__name__)
 
+_HELLOWORK_PARSER_REVISION = 2
+_REPLAY_BATCH_SIZE = 25
+
 
 def _inbox() -> GmailInbox:
     return GmailInbox(
@@ -54,20 +60,82 @@ async def _notify(bot, text: str) -> None:
     await bot.send_message(chat_id=config.YOUR_CHAT_ID, text=text)
 
 
+def _diagnostic_text(values: dict[str, int]) -> str:
+    return " ".join(f"{key}={values[key]}" for key in sorted(values))
+
+
 async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
     inbox = inbox or _inbox()
     uid_validity, messages = await asyncio.to_thread(inbox.unread)
     handled = 0
     rejected: dict[str, int] = {}
     mailbox_key = config.HELLOWORK_IMAP_USERNAME.casefold()
-    for item in messages:
+    stale = close_stale_rejected_emails(
+        config.JOBS_DB_PATH,
+        mailbox_key=mailbox_key,
+        current_uid_validity=uid_validity,
+        parser_revision=_HELLOWORK_PARSER_REVISION,
+    )
+    if stale:
+        logger.warning(
+            "HelloWork replay closed stale receipts count=%s parser_revision=%s",
+            stale, _HELLOWORK_PARSER_REVISION,
+        )
+    replay_uids = replayable_rejected_uids(
+        config.JOBS_DB_PATH,
+        mailbox_key=mailbox_key,
+        uid_validity=uid_validity,
+        parser_revision=_HELLOWORK_PARSER_REVISION,
+        limit=_REPLAY_BATCH_SIZE,
+    )
+    unread_uids = {message.uid for message in messages}
+    requested_replays = tuple(uid for uid in replay_uids if uid not in unread_uids)
+    replay_messages = ()
+    replay_message_uids: set[str] = set()
+    if requested_replays:
+        replay_validity, replay_messages, missing = await asyncio.to_thread(
+            inbox.fetch_uids, requested_replays
+        )
+        if replay_validity != uid_validity:
+            logger.warning(
+                "HelloWork replay skipped because UIDVALIDITY changed requested=%s",
+                len(requested_replays),
+            )
+            replay_messages = ()
+            missing = requested_replays
+        if missing:
+            closed = mark_replay_unavailable(
+                config.JOBS_DB_PATH,
+                mailbox_key=mailbox_key,
+                uid_validity=uid_validity,
+                uids=missing,
+                parser_revision=_HELLOWORK_PARSER_REVISION,
+            )
+            logger.warning(
+                "HelloWork replay messages unavailable requested=%s closed=%s",
+                len(missing), closed,
+            )
+        replay_message_uids = {message.uid for message in replay_messages}
+    all_messages = (*messages, *replay_messages)
+    logger.info(
+        "HelloWork intake cycle uidvalidity=%s unread=%s replay=%s",
+        uid_validity, len(messages), len(replay_messages),
+    )
+    for item in all_messages:
         parsed = BytesParser(policy=policy.default).parsebytes(item.raw)
         message_id = str(parsed.get("Message-ID", ""))
         try:
             alert = parse_hellowork_alert(item.raw)
             offers = await resolve_alert_offers(alert)
             if not offers:
-                raise HelloWorkEmailError("no valid HelloWork offer links found")
+                diagnostics = dict(alert.diagnostics)
+                diagnostics["resolved_offers"] = 0
+                raise HelloWorkEmailError(
+                    "no valid HelloWork offer links found",
+                    code="no_valid_offers",
+                    permanent=True,
+                    diagnostics=diagnostics,
+                )
             inserted, duplicates, already = record_email_offers(
                 config.JOBS_DB_PATH,
                 mailbox_key=mailbox_key,
@@ -76,9 +144,16 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
                 message_id=alert.message_id or message_id,
                 raw_message=item.raw,
                 offers=offers,
+                parser_revision=_HELLOWORK_PARSER_REVISION,
             )
-            await asyncio.to_thread(inbox.mark_seen, item.uid)
+            if item.uid not in replay_message_uids:
+                await asyncio.to_thread(inbox.mark_seen, item.uid)
             handled += 1
+            logger.info(
+                "HelloWork email accepted uid=%s offers=%s inserted=%s duplicates=%s %s",
+                item.uid, len(offers), inserted, duplicates,
+                _diagnostic_text(alert.diagnostics),
+            )
             if not already:
                 await _notify(
                     bot,
@@ -86,15 +161,12 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
                     f"{inserted} queued, {duplicates} duplicates.",
                 )
         except HelloWorkEmailError as exc:
-            is_permanent = any(
-                marker in str(exc).casefold()
-                for marker in (
-                    "sender", "dkim", "notification type", "message exceeds",
-                    "no valid", "no hellowork tracking",
+            diagnostics = _diagnostic_text(exc.diagnostics)
+            if not exc.permanent:
+                logger.warning(
+                    "HelloWork email intake will retry uid=%s code=%s reason=%s %s",
+                    item.uid, exc.code, exc, diagnostics,
                 )
-            )
-            if not is_permanent:
-                logger.warning("HelloWork email intake will retry uid=%s: %s", item.uid, exc)
                 continue
             inserted = record_rejected_email(
                 config.JOBS_DB_PATH,
@@ -104,11 +176,18 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
                 message_id=message_id,
                 raw_message=item.raw,
                 reason=str(exc),
+                parser_revision=_HELLOWORK_PARSER_REVISION,
             )
-            await asyncio.to_thread(inbox.mark_seen, item.uid)
+            if item.uid not in replay_message_uids:
+                await asyncio.to_thread(inbox.mark_seen, item.uid)
             handled += 1
+            logger.warning(
+                "HelloWork email rejected uid=%s code=%s reason=%s %s",
+                item.uid, exc.code, exc, diagnostics,
+            )
             if inserted:
-                reason = str(exc)
+                suffix = f" ({diagnostics})" if diagnostics else ""
+                reason = f"[{exc.code}] {exc}{suffix}"
                 rejected[reason] = rejected.get(reason, 0) + 1
     if rejected:
         summary = ", ".join(
@@ -222,3 +301,4 @@ async def hellowork_email_worker(bot) -> None:
         except Exception:
             logger.exception("HelloWork email worker cycle failed")
         await asyncio.sleep(config.HELLOWORK_IMAP_POLL_SECONDS)
+
