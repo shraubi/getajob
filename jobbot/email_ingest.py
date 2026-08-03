@@ -158,7 +158,8 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
                 await _notify(
                     bot,
                     f"HelloWork email: {len(offers)} offers found, "
-                    f"{inserted} queued, {duplicates} duplicates.",
+                    f"{inserted} queued for role/resume screening, "
+                    f"{duplicates} duplicates.",
                 )
         except HelloWorkEmailError as exc:
             diagnostics = _diagnostic_text(exc.diagnostics)
@@ -268,7 +269,17 @@ async def process_offer_once(bot) -> bool:
             finish_offer(config.JOBS_DB_PATH, offer_id, "paused", result.status)
             await _notify(bot, f"HelloWork paused ({result.status}): {result.detail}\n{result.url}")
         return True
-    except (AtsError, ResumeNotFoundError, UnknownDirectionError) as exc:
+    except UnknownDirectionError:
+        # A job alert can contain roles outside the configured resume
+        # directions. That is an expected filtering outcome, not an
+        # operational failure worth paging the user for every offer.
+        finish_offer(config.JOBS_DB_PATH, offer_id, "skipped", "unsupported_vacancy")
+        logger.info(
+            "HelloWork offer skipped unsupported vacancy offer_id=%s",
+            offer_id,
+        )
+        return True
+    except (AtsError, ResumeNotFoundError) as exc:
         if job_id:
             mark_job_send_failed(config.JOBS_DB_PATH, job_id)
         status = getattr(exc, "status", "failed")
