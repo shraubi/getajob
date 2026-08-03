@@ -297,7 +297,7 @@ def claim_next_offer(db_path: Path) -> dict | None:
 
 
 def finish_offer(db_path: Path, offer_id: str, status: str, error: str = "") -> None:
-    if status not in {"completed", "paused", "failed"}:
+    if status not in {"completed", "paused", "failed", "skipped"}:
         raise ValueError("invalid inbound-offer status")
     connection = _connect(db_path)
     try:
