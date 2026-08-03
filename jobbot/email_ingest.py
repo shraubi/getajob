@@ -32,6 +32,7 @@ from jobbot.integrations.hellowork_email import (
 logger = logging.getLogger(__name__)
 
 _HELLOWORK_PARSER_REVISION = 2
+_HELLOWORK_APPLICATION_REVISION = 2
 _REPLAY_BATCH_SIZE = 25
 
 
@@ -190,7 +191,7 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
 async def process_offer_once(bot=None) -> str | None:
     queued = claim_next_offer(config.JOBS_DB_PATH)
     if not queued:
-        return False
+        return None
     offer_id = queued["offer_id"]
     url = queued["canonical_url"]
     try:
@@ -199,14 +200,20 @@ async def process_offer_once(bot=None) -> str | None:
             config.HELLOWORK_AUTH_STATE_PATH,
             headless=config.ATS_BROWSER_HEADLESS,
         )
-        if result.status == "submitted":
-            finish_offer(config.JOBS_DB_PATH, offer_id, "completed")
+        if result.status in {"submitted", "already_applied"}:
+            finish_offer(
+                config.JOBS_DB_PATH, offer_id, "completed", result.detail,
+                application_revision=_HELLOWORK_APPLICATION_REVISION,
+            )
         else:
-            terminal = "failed" if result.status == "failed" else "paused"
-            finish_offer(config.JOBS_DB_PATH, offer_id, terminal, result.status)
+            terminal = "failed" if result.status in {"failed", "unavailable"} else "paused"
+            finish_offer(
+                config.JOBS_DB_PATH, offer_id, terminal, result.status,
+                application_revision=_HELLOWORK_APPLICATION_REVISION,
+            )
         logger.info(
-            "HelloWork direct account application offer_id=%s status=%s",
-            offer_id, result.status,
+            "HelloWork direct account application offer_id=%s status=%s detail=%s",
+            offer_id, result.status, result.detail,
         )
         return result.status
     except HelloWorkError as exc:
@@ -214,6 +221,7 @@ async def process_offer_once(bot=None) -> str | None:
         finish_offer(
             config.JOBS_DB_PATH, offer_id, "failed",
             f"{type(exc).__name__}: {exc}",
+            application_revision=_HELLOWORK_APPLICATION_REVISION,
         )
         logger.warning(
             "HelloWork direct account application failed offer_id=%s status=%s error_type=%s",
@@ -221,13 +229,20 @@ async def process_offer_once(bot=None) -> str | None:
         )
         return status
     except Exception as exc:
-        finish_offer(config.JOBS_DB_PATH, offer_id, "failed", f"{type(exc).__name__}: {exc}")
+        finish_offer(
+            config.JOBS_DB_PATH, offer_id, "failed",
+            f"{type(exc).__name__}: {exc}",
+            application_revision=_HELLOWORK_APPLICATION_REVISION,
+        )
         logger.exception("HelloWork offer processing failed offer_id=%s", offer_id)
         return "failed"
 
 
 async def process_pending_offers(bot) -> dict[str, int]:
-    recovered = requeue_legacy_screened_offers(config.JOBS_DB_PATH)
+    recovered = requeue_legacy_screened_offers(
+        config.JOBS_DB_PATH,
+        application_revision=_HELLOWORK_APPLICATION_REVISION,
+    )
     if recovered:
         logger.info(
             "HelloWork requeued offers blocked by legacy screening count=%s",

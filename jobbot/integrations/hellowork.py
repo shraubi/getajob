@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,6 +23,14 @@ _OPTIONAL = re.compile(r"\b(souhait[Ã©e]e?|un plus|id[Ã©e]alement|appr[Ã©e
 _QUALIFICATION = re.compile(r"\b(caces(?:\s+[a-z0-9]+)?|permis(?:\s+[a-z0-9]+)?|dipl[oÃ´]me|certificat|habilitation)\b", re.I)
 _AUTH_RE = re.compile(r"mot de passe|code de v[Ã©e]rification|v[Ã©e]rifiez votre identit[Ã©e]", re.I)
 _SUCCESS_RE = re.compile(r"candidature\s+(?:a\s+Ã©tÃ©\s+)?(?:envoyÃ©e|transmise)|merci\s+pour\s+votre\s+candidature", re.I)
+_APPLICATION_MARKERS = (
+    "merci pour votre candidature",
+    "candidature envoyee",
+    "candidature transmise",
+    "vous avez postule",
+    "vous avez deja postule",
+    "deja candidate",
+)
 
 
 class HelloWorkError(RuntimeError):
@@ -49,6 +58,21 @@ class HelloWorkSubmissionResult:
     status: str
     url: str
     detail: str = ""
+
+
+def _normalized_ui_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value).casefold()
+    return " ".join(
+        "".join(
+            character for character in decomposed
+            if not unicodedata.combining(character)
+        ).split()
+    )
+
+
+def _application_already_recorded(value: str) -> bool:
+    normalized = _normalized_ui_text(value)
+    return any(marker in normalized for marker in _APPLICATION_MARKERS)
 
 
 def parse_hellowork_url(url: str) -> tuple[str, str]:
@@ -266,6 +290,11 @@ async def submit_hellowork_account_application(
                     "auth_required", page.url,
                     "HelloWork login or verification is required",
                 )
+            if _application_already_recorded(body):
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "already_applied", page.url, "application_marker=1",
+                )
             challenge = page.locator(
                 'iframe[src*="captcha" i], iframe[title*="challenge" i], '
                 '[class*="captcha" i]'
@@ -283,8 +312,8 @@ async def submit_hellowork_account_application(
             if not await apply.count():
                 await browser.close()
                 return HelloWorkSubmissionResult(
-                    "failed", page.url,
-                    "Offer is unavailable or already applied",
+                    "unavailable", page.url,
+                    "apply_controls=0 application_marker=0",
                 )
             await apply.first.click()
             await page.wait_for_timeout(800)
@@ -318,15 +347,25 @@ async def submit_hellowork_account_application(
             confirm = page.get_by_role(
                 "button",
                 name=re.compile(
-                    r"envoyer\s+(?:ma\s+)?candidature|confirmer|valider|postuler|candidater",
+                    r"envoyer(?:\s+ma\s+candidature)?|confirmer|valider|"
+                    r"finaliser|terminer|continuer|postuler|candidater",
                     re.I,
                 ),
             )
-            if not await confirm.count():
+            confirm_count = await confirm.count()
+            submit_controls = page.locator(
+                'button[type="submit"]:visible, input[type="submit"]:visible'
+            )
+            submit_count = await submit_controls.count()
+            visible_button_count = await page.locator("button:visible").count()
+            if not confirm_count and submit_count:
+                confirm = submit_controls
+            elif not confirm_count:
                 await browser.close()
                 return HelloWorkSubmissionResult(
                     "confirmation_required", page.url,
-                    "No HelloWork account-resume confirmation control",
+                    f"confirm_controls=0 submit_controls=0 "
+                    f"visible_buttons={visible_button_count}",
                 )
             await confirm.last.click()
             await page.wait_for_timeout(1200)
@@ -334,11 +373,16 @@ async def submit_hellowork_account_application(
             await context.storage_state(path=str(auth_state_path))
             result_url = page.url
             await browser.close()
-            if _SUCCESS_RE.search(result_text):
-                return HelloWorkSubmissionResult("submitted", result_url, "confirmed")
+            if _application_already_recorded(result_text) or _SUCCESS_RE.search(result_text):
+                return HelloWorkSubmissionResult(
+                    "submitted", result_url,
+                    f"application_marker=1 confirm_controls={confirm_count} "
+                    f"submit_controls={submit_count}",
+                )
             return HelloWorkSubmissionResult(
                 "submission_unknown", result_url,
-                "No explicit success confirmation",
+                f"application_marker=0 confirm_controls={confirm_count} "
+                f"submit_controls={submit_count} visible_buttons={visible_button_count}",
             )
     except HelloWorkError:
         raise
