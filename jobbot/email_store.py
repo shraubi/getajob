@@ -301,6 +301,8 @@ def requeue_legacy_screened_offers(
                    ))
                    OR
                    (status='failed' AND last_error='failed')
+                   OR
+                   (status='failed' AND application_revision=1)
                )""",
             (now, application_revision),
         )
