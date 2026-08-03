@@ -17,11 +17,11 @@ from jobbot.integrations.web_application import load_profile_data
 
 _HOSTS = {"hellowork.com", "www.hellowork.com"}
 _PATH_RE = re.compile(r"^/fr-fr/emplois/(?P<id>[0-9]+)\.html/?$")
-_MANDATORY = re.compile(r"\b(obligatoire|exig[ée]e?|imp[ée]ratif|requis[ea]?|devez poss[ée]der)\b", re.I)
-_OPTIONAL = re.compile(r"\b(souhait[ée]e?|un plus|id[ée]alement|appr[ée]ci[ée]e?)\b", re.I)
-_QUALIFICATION = re.compile(r"\b(caces(?:\s+[a-z0-9]+)?|permis(?:\s+[a-z0-9]+)?|dipl[oô]me|certificat|habilitation)\b", re.I)
-_AUTH_RE = re.compile(r"mot de passe|code de v[ée]rification|v[ée]rifiez votre identit[ée]", re.I)
-_SUCCESS_RE = re.compile(r"candidature\s+(?:a\s+été\s+)?(?:envoyée|transmise)|merci\s+pour\s+votre\s+candidature", re.I)
+_MANDATORY = re.compile(r"\b(obligatoire|exig[Ã©e]e?|imp[Ã©e]ratif|requis[ea]?|devez poss[Ã©e]der)\b", re.I)
+_OPTIONAL = re.compile(r"\b(souhait[Ã©e]e?|un plus|id[Ã©e]alement|appr[Ã©e]ci[Ã©e]e?)\b", re.I)
+_QUALIFICATION = re.compile(r"\b(caces(?:\s+[a-z0-9]+)?|permis(?:\s+[a-z0-9]+)?|dipl[oÃ´]me|certificat|habilitation)\b", re.I)
+_AUTH_RE = re.compile(r"mot de passe|code de v[Ã©e]rification|v[Ã©e]rifiez votre identit[Ã©e]", re.I)
+_SUCCESS_RE = re.compile(r"candidature\s+(?:a\s+Ã©tÃ©\s+)?(?:envoyÃ©e|transmise)|merci\s+pour\s+votre\s+candidature", re.I)
 
 
 class HelloWorkError(RuntimeError):
@@ -194,7 +194,7 @@ async def _fill_conventional_form(
         matched_key = ""
         for key, candidate in values.items():
             aliases = {
-                "first": ("first", "prenom", "prénom"), "last": ("last", "surname", "nom"),
+                "first": ("first", "prenom", "prÃ©nom"), "last": ("last", "surname", "nom"),
                 "email": ("email", "mail"), "phone": ("phone", "tel", "mobile"),
                 "address": ("address", "adresse"),
             }.get(key, (key.casefold(),))
@@ -226,6 +226,126 @@ async def _fill_conventional_form(
         elif await control.get_attribute("required") is not None and not current:
             missing.append(name or "required field")
     return tuple(dict.fromkeys(missing))
+
+
+async def submit_hellowork_account_application(
+    url: str,
+    auth_state_path: Path,
+    *,
+    headless: bool = True,
+) -> HelloWorkSubmissionResult:
+    """Apply using the resume and applicant data already stored by HelloWork.
+
+    Email-alert offers deliberately bypass vacancy classification, local resume
+    discovery, requirement scoring, profile form filling, and external ATS
+    redirects. The authenticated HelloWork flow is exactly two user actions:
+    open the offer and click Postuler, then confirm the account application.
+    """
+    canonical = parse_hellowork_url(url)[1]
+    if not auth_state_path.is_file():
+        return HelloWorkSubmissionResult(
+            "auth_required", canonical,
+            "HelloWork authentication state is missing",
+        )
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=headless)
+            context = await browser.new_context(storage_state=str(auth_state_path))
+            page = await context.new_page()
+            await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
+            body = await page.locator("body").inner_text()
+            if (
+                _AUTH_RE.search(body)
+                or "/connexion" in page.url
+                or await page.locator('input[type="password"]:visible').count()
+            ):
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "auth_required", page.url,
+                    "HelloWork login or verification is required",
+                )
+            challenge = page.locator(
+                'iframe[src*="captcha" i], iframe[title*="challenge" i], '
+                '[class*="captcha" i]'
+            )
+            if await challenge.count():
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "auth_required", page.url,
+                    "HelloWork CAPTCHA requires attention",
+                )
+
+            apply = page.get_by_role(
+                "button", name=re.compile(r"^postuler", re.I)
+            ).or_(page.get_by_role("link", name=re.compile(r"^postuler", re.I)))
+            if not await apply.count():
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "failed", page.url,
+                    "Offer is unavailable or already applied",
+                )
+            await apply.first.click()
+            await page.wait_for_timeout(800)
+
+            if (urlparse(page.url).hostname or "").casefold() not in _HOSTS:
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "external_form_unsupported", page.url,
+                    "Offer uses an external recruiter form",
+                )
+            post_click_body = await page.locator("body").inner_text()
+            if (
+                _AUTH_RE.search(post_click_body)
+                or await page.locator('input[type="password"]:visible').count()
+            ):
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "auth_required", page.url,
+                    "HelloWork login or verification is required",
+                )
+            if await page.locator(
+                'iframe[src*="captcha" i], iframe[title*="challenge" i], '
+                '[class*="captcha" i]'
+            ).count():
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "auth_required", page.url,
+                    "HelloWork CAPTCHA requires attention",
+                )
+
+            confirm = page.get_by_role(
+                "button",
+                name=re.compile(
+                    r"envoyer\s+(?:ma\s+)?candidature|confirmer|valider|postuler|candidater",
+                    re.I,
+                ),
+            )
+            if not await confirm.count():
+                await browser.close()
+                return HelloWorkSubmissionResult(
+                    "confirmation_required", page.url,
+                    "No HelloWork account-resume confirmation control",
+                )
+            await confirm.last.click()
+            await page.wait_for_timeout(1200)
+            result_text = await page.locator("body").inner_text()
+            await context.storage_state(path=str(auth_state_path))
+            result_url = page.url
+            await browser.close()
+            if _SUCCESS_RE.search(result_text):
+                return HelloWorkSubmissionResult("submitted", result_url, "confirmed")
+            return HelloWorkSubmissionResult(
+                "submission_unknown", result_url,
+                "No explicit success confirmation",
+            )
+    except HelloWorkError:
+        raise
+    except Exception as exc:
+        raise HelloWorkError(
+            f"HelloWork account application failed: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def submit_hellowork_application(
@@ -314,3 +434,4 @@ async def submit_hellowork_application(
         raise
     except Exception as exc:
         raise HelloWorkError(f"HelloWork browser submission failed: {type(exc).__name__}: {exc}") from exc
+

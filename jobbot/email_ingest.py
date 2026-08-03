@@ -8,7 +8,6 @@ from email import policy
 from email.parser import BytesParser
 
 from jobbot import config
-from jobbot.application import ResumeNotFoundError, UnknownDirectionError, build_application_for_vacancy
 from jobbot.email_store import (
     claim_next_offer,
     close_stale_rejected_emails,
@@ -16,28 +15,18 @@ from jobbot.email_store import (
     mark_replay_unavailable,
     record_email_offers,
     record_rejected_email,
+    requeue_legacy_screened_offers,
     replayable_rejected_uids,
 )
-from jobbot.form_answers import FormQuestion, create_answer_batch, set_batch_message_id
-from jobbot.integrations.ats import (
-    AtsError,
-    fetch_ats_page,
-    preflight_ats_application,
-    submit_ats_application,
+from jobbot.integrations.hellowork import (
+    HelloWorkError,
+    submit_hellowork_account_application,
 )
 from jobbot.integrations.hellowork_email import (
     GmailInbox,
     HelloWorkEmailError,
     parse_hellowork_alert,
     resolve_alert_offers,
-)
-from jobbot.store import (
-    claim_job_for_send,
-    mark_job_awaiting_answers,
-    mark_job_send_failed,
-    mark_job_sent,
-    record_send_attempt,
-    save_fetched_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,7 +147,7 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
                 await _notify(
                     bot,
                     f"HelloWork email: {len(offers)} offers found, "
-                    f"{inserted} queued for role/resume screening, "
+                    f"{inserted} queued for direct account application, "
                     f"{duplicates} duplicates.",
                 )
         except HelloWorkEmailError as exc:
@@ -198,105 +187,62 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
     return handled
 
 
-async def _request_answers(bot, job_id: str, detail: str) -> None:
-    fields = tuple(filter(None, (item.strip() for item in detail.split(","))))
-    questions = tuple(
-        FormQuestion(
-            "hellowork", field, field, "text",
-            canonical_fact=f"profile.answer.{field}", confidence=1.0,
-        )
-        for field in fields
-    )
-    if not questions:
-        await _notify(bot, "HelloWork needs an unknown required answer; finish the application manually.")
-        return
-    batch_id = create_answer_batch(config.JOBS_DB_PATH, job_id, config.YOUR_CHAT_ID, questions)
-    mark_job_awaiting_answers(config.JOBS_DB_PATH, job_id)
-    rows = ["HelloWork needs application answers. Reply with one numbered answer per line.", ""]
-    rows.extend(f"{index}. {question.label}" for index, question in enumerate(questions, 1))
-    sent = await bot.send_message(chat_id=config.YOUR_CHAT_ID, text="\n".join(rows))
-    message_id = int(getattr(sent, "message_id", 0) or 0)
-    if message_id:
-        set_batch_message_id(config.JOBS_DB_PATH, batch_id, message_id)
-
-
-async def process_offer_once(bot) -> bool:
+async def process_offer_once(bot=None) -> str | None:
     queued = claim_next_offer(config.JOBS_DB_PATH)
     if not queued:
         return False
     offer_id = queued["offer_id"]
     url = queued["canonical_url"]
-    job_id = ""
     try:
-        page = await fetch_ats_page(url)
-        draft = build_application_for_vacancy(page.vacancy, config.RESUME_DIR)
-        preflight = await preflight_ats_application(
-            url, draft.resume_path, config.APPLICATION_PROFILE_PATH,
-            answer_db_path=config.JOBS_DB_PATH,
-        )
-        job_id = save_fetched_job(
-            config.JOBS_DB_PATH, preflight.page, draft.direction,
-            draft.resume_path.name, draft.message,
-        )
-        if preflight.questions:
-            await _request_answers(
-                bot, job_id, ",".join(question.field_id for question in preflight.questions)
-            )
-            finish_offer(config.JOBS_DB_PATH, offer_id, "paused", "answers_required")
-            return True
-        if not claim_job_for_send(config.JOBS_DB_PATH, job_id):
-            finish_offer(config.JOBS_DB_PATH, offer_id, "completed")
-            return True
-        result = await submit_ats_application(
-            url, draft.resume_path, config.APPLICATION_PROFILE_PATH,
+        result = await submit_hellowork_account_application(
+            url,
             config.HELLOWORK_AUTH_STATE_PATH,
             headless=config.ATS_BROWSER_HEADLESS,
-            answer_db_path=config.JOBS_DB_PATH,
-        )
-        record_send_attempt(
-            config.JOBS_DB_PATH, job_id, "hellowork", url, result.status
         )
         if result.status == "submitted":
-            mark_job_sent(config.JOBS_DB_PATH, job_id, result.url)
             finish_offer(config.JOBS_DB_PATH, offer_id, "completed")
-            await _notify(bot, f"HelloWork application submitted: {page.vacancy.title}\n{result.url}")
-        elif result.status == "answers_required":
-            mark_job_send_failed(config.JOBS_DB_PATH, job_id)
-            await _request_answers(bot, job_id, result.detail)
-            finish_offer(config.JOBS_DB_PATH, offer_id, "paused", result.status)
         else:
-            mark_job_send_failed(config.JOBS_DB_PATH, job_id)
-            finish_offer(config.JOBS_DB_PATH, offer_id, "paused", result.status)
-            await _notify(bot, f"HelloWork paused ({result.status}): {result.detail}\n{result.url}")
-        return True
-    except UnknownDirectionError:
-        # A job alert can contain roles outside the configured resume
-        # directions. That is an expected filtering outcome, not an
-        # operational failure worth paging the user for every offer.
-        finish_offer(config.JOBS_DB_PATH, offer_id, "skipped", "unsupported_vacancy")
+            terminal = "failed" if result.status == "failed" else "paused"
+            finish_offer(config.JOBS_DB_PATH, offer_id, terminal, result.status)
         logger.info(
-            "HelloWork offer skipped unsupported vacancy offer_id=%s",
-            offer_id,
+            "HelloWork direct account application offer_id=%s status=%s",
+            offer_id, result.status,
         )
-        return True
-    except (AtsError, ResumeNotFoundError) as exc:
-        if job_id:
-            mark_job_send_failed(config.JOBS_DB_PATH, job_id)
+        return result.status
+    except HelloWorkError as exc:
         status = getattr(exc, "status", "failed")
-        terminal = "paused" if status in {
-            "auth_required", "requirements_unmet", "requirements_ambiguous",
-            "resume_missing", "answers_required",
-        } else "failed"
-        finish_offer(config.JOBS_DB_PATH, offer_id, terminal, f"{type(exc).__name__}: {exc}")
-        await _notify(bot, f"HelloWork offer {offer_id} {terminal}: {exc}")
-        return True
+        finish_offer(
+            config.JOBS_DB_PATH, offer_id, "failed",
+            f"{type(exc).__name__}: {exc}",
+        )
+        logger.warning(
+            "HelloWork direct account application failed offer_id=%s status=%s error_type=%s",
+            offer_id, status, type(exc).__name__,
+        )
+        return status
     except Exception as exc:
-        if job_id:
-            mark_job_send_failed(config.JOBS_DB_PATH, job_id)
         finish_offer(config.JOBS_DB_PATH, offer_id, "failed", f"{type(exc).__name__}: {exc}")
         logger.exception("HelloWork offer processing failed offer_id=%s", offer_id)
-        await _notify(bot, f"HelloWork offer {offer_id} failed safely: {type(exc).__name__}")
-        return True
+        return "failed"
+
+
+async def process_pending_offers(bot) -> dict[str, int]:
+    recovered = requeue_legacy_screened_offers(config.JOBS_DB_PATH)
+    if recovered:
+        logger.info(
+            "HelloWork requeued offers blocked by legacy screening count=%s",
+            recovered,
+        )
+    outcomes: dict[str, int] = {}
+    while outcome := await process_offer_once():
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    if outcomes:
+        summary = ", ".join(
+            f"{count} {status}"
+            for status, count in sorted(outcomes.items())
+        )
+        await _notify(bot, f"HelloWork applications: {summary}.")
+    return outcomes
 
 
 async def hellowork_email_worker(bot) -> None:
@@ -305,8 +251,7 @@ async def hellowork_email_worker(bot) -> None:
     while True:
         try:
             await ingest_email_once(bot)
-            while await process_offer_once(bot):
-                pass
+            await process_pending_offers(bot)
         except asyncio.CancelledError:
             raise
         except Exception:

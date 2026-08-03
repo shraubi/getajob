@@ -267,6 +267,30 @@ def close_stale_rejected_emails(
         connection.close()
 
 
+def requeue_legacy_screened_offers(db_path: Path) -> int:
+    """Recover offers blocked by the removed classifier/resume pipeline."""
+    if not db_path.is_file():
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    connection = _connect(db_path)
+    try:
+        cursor = connection.execute(
+            """UPDATE inbound_offers
+               SET status='pending', last_error='', updated_at=?
+               WHERE provider='hellowork' AND (
+                   (status='skipped' AND last_error='unsupported_vacancy')
+                   OR
+                   (status='failed' AND last_error=
+                       'UnknownDirectionError: Could not confidently classify this vacancy')
+               )""",
+            (now,),
+        )
+        connection.commit()
+        return cursor.rowcount
+    finally:
+        connection.close()
+
+
 def claim_next_offer(db_path: Path) -> dict | None:
     connection = _connect(db_path)
     try:
