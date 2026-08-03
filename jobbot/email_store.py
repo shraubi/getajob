@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS inbound_offers (
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '',
+    application_revision INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY(provider, offer_id)
@@ -54,6 +55,14 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         connection.execute(
             """ALTER TABLE inbound_email_messages
                ADD COLUMN parser_revision INTEGER NOT NULL DEFAULT 1"""
+        )
+    offer_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(inbound_offers)")
+    }
+    if "application_revision" not in offer_columns:
+        connection.execute(
+            """ALTER TABLE inbound_offers
+               ADD COLUMN application_revision INTEGER NOT NULL DEFAULT 1"""
         )
     return connection
 
@@ -267,8 +276,12 @@ def close_stale_rejected_emails(
         connection.close()
 
 
-def requeue_legacy_screened_offers(db_path: Path) -> int:
-    """Recover offers blocked by the removed classifier/resume pipeline."""
+def requeue_legacy_screened_offers(
+    db_path: Path,
+    *,
+    application_revision: int = 1,
+) -> int:
+    """Recover offers blocked by old or ambiguous application logic once."""
     if not db_path.is_file():
         return 0
     now = datetime.now(timezone.utc).isoformat()
@@ -277,13 +290,19 @@ def requeue_legacy_screened_offers(db_path: Path) -> int:
         cursor = connection.execute(
             """UPDATE inbound_offers
                SET status='pending', last_error='', updated_at=?
-               WHERE provider='hellowork' AND (
+               WHERE provider='hellowork' AND application_revision < ? AND (
                    (status='skipped' AND last_error='unsupported_vacancy')
                    OR
                    (status='failed' AND last_error=
                        'UnknownDirectionError: Could not confidently classify this vacancy')
+                   OR
+                   (status='paused' AND last_error IN (
+                       'confirmation_required', 'submission_unknown'
+                   ))
+                   OR
+                   (status='failed' AND last_error='failed')
                )""",
-            (now,),
+            (now, application_revision),
         )
         connection.commit()
         return cursor.rowcount
@@ -320,16 +339,34 @@ def claim_next_offer(db_path: Path) -> dict | None:
         connection.close()
 
 
-def finish_offer(db_path: Path, offer_id: str, status: str, error: str = "") -> None:
+def finish_offer(
+    db_path: Path,
+    offer_id: str,
+    status: str,
+    error: str = "",
+    *,
+    application_revision: int | None = None,
+) -> None:
     if status not in {"completed", "paused", "failed", "skipped"}:
         raise ValueError("invalid inbound-offer status")
     connection = _connect(db_path)
     try:
-        connection.execute(
-            """UPDATE inbound_offers SET status=?, last_error=?, updated_at=?
-               WHERE provider='hellowork' AND offer_id=?""",
-            (status, error[:500], datetime.now(timezone.utc).isoformat(), offer_id),
-        )
+        if application_revision is None:
+            connection.execute(
+                """UPDATE inbound_offers SET status=?, last_error=?, updated_at=?
+                   WHERE provider='hellowork' AND offer_id=?""",
+                (status, error[:500], datetime.now(timezone.utc).isoformat(), offer_id),
+            )
+        else:
+            connection.execute(
+                """UPDATE inbound_offers
+                   SET status=?, last_error=?, application_revision=?, updated_at=?
+                   WHERE provider='hellowork' AND offer_id=?""",
+                (
+                    status, error[:500], application_revision,
+                    datetime.now(timezone.utc).isoformat(), offer_id,
+                ),
+            )
         connection.commit()
     finally:
         connection.close()

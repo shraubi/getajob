@@ -10,6 +10,7 @@ import httpx
 from jobbot.integrations.hellowork import (
     HelloWorkError,
     HelloWorkSubmissionResult,
+    _application_already_recorded,
     check_requirements,
     fetch_hellowork_posting,
     parse_hellowork_url,
@@ -27,6 +28,11 @@ HTML = """
 
 
 class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detects_accented_success_and_already_applied_text(self):
+        self.assertTrue(_application_already_recorded("Candidature envoyÃ©e"))
+        self.assertTrue(_application_already_recorded("Vous avez dÃ©jÃ  postulÃ©"))
+        self.assertFalse(_application_already_recorded("Envoyer ma candidature"))
+
     async def test_parses_canonical_offer(self):
         self.assertEqual(parse_hellowork_url(URL)[0], "81835625")
         with self.assertRaises(HelloWorkError):
@@ -160,7 +166,10 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result,
-            HelloWorkSubmissionResult("submitted", URL, "confirmed"),
+            HelloWorkSubmissionResult(
+                "submitted", URL,
+                "application_marker=1 confirm_controls=1 submit_controls=0",
+            ),
         )
         self.assertEqual(clicks, ["apply", "confirm"])
 

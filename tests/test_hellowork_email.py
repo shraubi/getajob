@@ -263,10 +263,43 @@ class EmailStoreTests(unittest.TestCase):
                 "UnknownDirectionError: Could not confidently classify this vacancy",
             )
 
-            self.assertEqual(requeue_legacy_screened_offers(db), 2)
+            self.assertEqual(
+                requeue_legacy_screened_offers(db, application_revision=2),
+                2,
+            )
             self.assertEqual(claim_next_offer(db)["offer_id"], "1")
-            finish_offer(db, "1", "completed")
+            finish_offer(db, "1", "completed", application_revision=2)
             self.assertEqual(claim_next_offer(db)["offer_id"], "2")
+
+    def test_ambiguous_direct_results_retry_once_per_application_revision(self):
+        offers = (
+            ("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),
+            ("2", "https://www.hellowork.com/fr-fr/emplois/2.html"),
+            ("3", "https://www.hellowork.com/fr-fr/emplois/3.html"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers,
+            )
+            finish_offer(db, "1", "paused", "submission_unknown")
+            finish_offer(db, "2", "paused", "confirmation_required")
+            finish_offer(db, "3", "failed", "failed")
+
+            self.assertEqual(
+                requeue_legacy_screened_offers(db, application_revision=2),
+                3,
+            )
+            for offer_id in ("1", "2", "3"):
+                finish_offer(
+                    db, offer_id, "paused", "submission_unknown",
+                    application_revision=2,
+                )
+            self.assertEqual(
+                requeue_legacy_screened_offers(db, application_revision=2),
+                0,
+            )
 
     def test_existing_schema_migrates_and_rejected_receipt_can_be_queued(self):
         offers = (("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),)
