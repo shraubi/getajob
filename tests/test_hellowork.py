@@ -9,16 +9,18 @@ import httpx
 
 from jobbot.integrations.hellowork import (
     HelloWorkError,
+    HelloWorkSubmissionResult,
     check_requirements,
     fetch_hellowork_posting,
     parse_hellowork_url,
     preflight_hellowork_application,
+    submit_hellowork_account_application,
 )
 
 URL = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
 HTML = """
 <html><head><script type="application/ld+json">
-{"@type":"JobPosting","title":"Aide Ménager H/F","description":"Ménage à domicile auprès de particuliers avec entretien complet du logement et accompagnement quotidien.",
+{"@type":"JobPosting","title":"Aide MÃ©nager H/F","description":"MÃ©nage Ã  domicile auprÃ¨s de particuliers avec entretien complet du logement et accompagnement quotidien.",
  "hiringOrganization":{"name":"Amelis"},"jobLocation":{"address":{"addressLocality":"Paris"}}}
 </script></head><body><a href="#apply">Postuler</a></body></html>
 """
@@ -41,7 +43,7 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(posting.page.contact_value, "hellowork")
 
     async def test_mandatory_requirements_use_explicit_profile_facts(self):
-        description = "Le CACES R489 est obligatoire. Le permis B est souhaité."
+        description = "Le CACES R489 est obligatoire. Le permis B est souhaitÃ©."
         status, details = check_requirements(
             description, {"facts": {"missing_requirements": ["CACES R489"]}}
         )
@@ -68,10 +70,104 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
                     await preflight_hellowork_application(URL, resume, profile)
             self.assertEqual(raised.exception.status, "requirements_ambiguous")
 
+    async def test_account_application_is_exactly_two_clicks_without_local_resume(self):
+        clicks = []
+
+        class Locator:
+            def __init__(self, kind, page=None):
+                self.kind = kind
+                self.page = page
+                self.first = self
+                self.last = self
+
+            def or_(self, other):
+                return self
+
+            async def count(self):
+                return 0 if self.kind in {"password", "challenge"} else 1
+
+            async def click(self):
+                clicks.append(self.kind)
+                if self.page:
+                    self.page.stage += 1
+
+            async def inner_text(self):
+                return (
+                    "Merci pour votre candidature"
+                    if self.page.stage >= 2 else "Offre HelloWork"
+                )
+
+        class Page:
+            def __init__(self):
+                self.url = URL
+                self.stage = 0
+                self.role_calls = 0
+
+            async def goto(self, url, **kwargs):
+                self.url = url
+
+            async def wait_for_timeout(self, milliseconds):
+                return None
+
+            def locator(self, selector):
+                if selector == "body":
+                    return Locator("body", self)
+                if "password" in selector:
+                    return Locator("password", self)
+                return Locator("challenge", self)
+
+            def get_by_role(self, role, name=None):
+                self.role_calls += 1
+                if self.role_calls <= 2:
+                    return Locator("apply", self)
+                return Locator("confirm", self)
+
+        page = Page()
+
+        class Context:
+            async def new_page(self):
+                return page
+
+            async def storage_state(self, **kwargs):
+                return None
+
+        class Browser:
+            async def new_context(self, **kwargs):
+                return Context()
+
+            async def close(self):
+                return None
+
+        class Chromium:
+            async def launch(self, **kwargs):
+                return Browser()
+
+        class Playwright:
+            chromium = Chromium()
+
+        class Manager:
+            async def __aenter__(self):
+                return Playwright()
+
+            async def __aexit__(self, *args):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            auth = Path(directory) / "hellowork-auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            with patch("playwright.async_api.async_playwright", return_value=Manager()):
+                result = await submit_hellowork_account_application(URL, auth)
+
+        self.assertEqual(
+            result,
+            HelloWorkSubmissionResult("submitted", URL, "confirmed"),
+        )
+        self.assertEqual(clicks, ["apply", "confirm"])
+
     async def _posting_with_description(self, description):
         payload = HTML.replace(
-            "Ménage à domicile auprès de particuliers avec entretien complet du logement et accompagnement quotidien.",
-            description + " Expérience en entretien de logements auprès de particuliers et accompagnement quotidien.",
+            "MÃ©nage Ã  domicile auprÃ¨s de particuliers avec entretien complet du logement et accompagnement quotidien.",
+            description + " ExpÃ©rience en entretien de logements auprÃ¨s de particuliers et accompagnement quotidien.",
         )
         def handler(request):
             return httpx.Response(200, text=payload, request=request)
@@ -81,3 +177,4 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

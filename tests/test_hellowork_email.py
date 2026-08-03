@@ -23,11 +23,10 @@ from jobbot.email_store import (
     get_offer,
     record_email_offers,
     record_rejected_email,
+    requeue_legacy_screened_offers,
     replayable_rejected_uids,
 )
-from jobbot.integrations.ats import AtsPreflight, AtsSubmissionResult
-from jobbot.integrations.job_page import ParsedJobPage
-from jobbot.application import Vacancy
+from jobbot.integrations.hellowork import HelloWorkSubmissionResult
 from jobbot.integrations.hellowork_email import (
     InboxMessage,
     HelloWorkEmailError,
@@ -247,6 +246,28 @@ class EmailStoreTests(unittest.TestCase):
             self.assertEqual(get_offer(db, "1")["status"], "completed")
             self.assertIsNone(claim_next_offer(db))
 
+    def test_requeues_offers_blocked_by_removed_screening_pipeline(self):
+        offers = (
+            ("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),
+            ("2", "https://www.hellowork.com/fr-fr/emplois/2.html"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers,
+            )
+            finish_offer(db, "1", "skipped", "unsupported_vacancy")
+            finish_offer(
+                db, "2", "failed",
+                "UnknownDirectionError: Could not confidently classify this vacancy",
+            )
+
+            self.assertEqual(requeue_legacy_screened_offers(db), 2)
+            self.assertEqual(claim_next_offer(db)["offer_id"], "1")
+            finish_offer(db, "1", "completed")
+            self.assertEqual(claim_next_offer(db)["offer_id"], "2")
+
     def test_existing_schema_migrates_and_rejected_receipt_can_be_queued(self):
         offers = (("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),)
         with tempfile.TemporaryDirectory() as directory:
@@ -355,15 +376,37 @@ class EmailReplayTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
-    async def test_email_skips_unsupported_offer_and_submits_supported_offer(self):
-        unsupported_url = "https://www.hellowork.com/fr-fr/emplois/81791563.html"
-        supported_url = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
+    async def test_pending_offer_results_are_reported_once_per_batch(self):
+        bot = AsyncMock()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(
+                    email_ingest.config, "JOBS_DB_PATH",
+                    Path(directory) / "jobs.db",
+                ),
+                patch(
+                    "jobbot.email_ingest.process_offer_once",
+                    new=AsyncMock(side_effect=("submitted", "submitted", None)),
+                ),
+            ):
+                outcomes = await email_ingest.process_pending_offers(bot)
+
+        self.assertEqual(outcomes, {"submitted": 2})
+        bot.send_message.assert_awaited_once()
+        self.assertEqual(
+            bot.send_message.await_args.kwargs["text"],
+            "HelloWork applications: 2 submitted.",
+        )
+
+    async def test_email_directly_applies_to_every_offer_without_scoring_or_resume(self):
+        first_url = "https://www.hellowork.com/fr-fr/emplois/81791563.html"
+        second_url = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
         message = EmailMessage()
         message["Message-ID"] = "<full-path@hellowork.com>"
         message.set_content(
             "<html><body>"
-            f'<a href="{tracking_url(1, unsupported_url)}">Warehouse role</a>'
-            f'<a href="{tracking_url(2, supported_url)}">Python role</a>'
+            f'<a href="{tracking_url(1, first_url)}">Warehouse role</a>'
+            f'<a href="{tracking_url(2, second_url)}">Another role</a>'
             "</body></html>",
             subtype="html",
         )
@@ -379,70 +422,34 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
             def mark_seen(self, uid):
                 self.seen = uid
 
-        unsupported_page = ParsedJobPage(
-            Vacancy(
-                title="Preparateur de Commandes",
-                company="Start People",
-                description="Preparation et expedition des commandes en entrepot.",
-                url=unsupported_url,
-            ),
-            "job_board",
-            unsupported_url,
-            unsupported_url,
-        )
-        supported_page = ParsedJobPage(
-            Vacancy(
-                title="Python Backend Engineer",
-                company="Example",
-                description="Build FastAPI services with Python and SQLAlchemy.",
-                url=supported_url,
-            ),
-            "job_board",
-            supported_url,
-            supported_url,
-        )
-
-        async def fetch_page(url):
-            return unsupported_page if url == unsupported_url else supported_page
-
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = root / "jobs.db"
-            resumes = root / "resumes"
-            resumes.mkdir()
-            # An unreadable PDF exercises the production filename fallback.
-            (resumes / "python_backend.pdf").write_bytes(b"not a real PDF")
             bot = AsyncMock()
-            preflight = AtsPreflight(
-                "hellowork", supported_page, (), object(),
-                questions=(),
+            submit = AsyncMock(
+                side_effect=(
+                    HelloWorkSubmissionResult("submitted", first_url, "confirmed"),
+                    HelloWorkSubmissionResult("submitted", second_url, "confirmed"),
+                )
             )
             with (
                 patch.object(email_ingest.config, "JOBS_DB_PATH", db),
-                patch.object(email_ingest.config, "RESUME_DIR", resumes),
-                patch.object(email_ingest.config, "APPLICATION_PROFILE_PATH", root / "profile.json"),
                 patch.object(email_ingest.config, "HELLOWORK_AUTH_STATE_PATH", root / "auth.json"),
                 patch.object(email_ingest.config, "HELLOWORK_IMAP_USERNAME", "bot"),
-                patch("jobbot.email_ingest.fetch_ats_page", new=AsyncMock(side_effect=fetch_page)),
-                patch("jobbot.email_ingest.preflight_ats_application", new=AsyncMock(return_value=preflight)),
-                patch(
-                    "jobbot.email_ingest.submit_ats_application",
-                    new=AsyncMock(return_value=AtsSubmissionResult("submitted", supported_url, "confirmed")),
-                ),
+                patch("jobbot.email_ingest.submit_hellowork_account_application", new=submit),
+                patch("jobbot.classifier.classify") as classify,
             ):
                 self.assertEqual(await email_ingest.ingest_email_once(bot, Inbox()), 1)
                 bot.reset_mock()
 
-                self.assertTrue(await email_ingest.process_offer_once(bot))
-                self.assertEqual(get_offer(db, "81791563")["status"], "skipped")
-                bot.send_message.assert_not_called()
-
-                self.assertTrue(await email_ingest.process_offer_once(bot))
+                self.assertEqual(await email_ingest.process_offer_once(), "submitted")
+                self.assertEqual(get_offer(db, "81791563")["status"], "completed")
+                self.assertEqual(await email_ingest.process_offer_once(), "submitted")
                 self.assertEqual(get_offer(db, "81835625")["status"], "completed")
                 self.assertIsNone(claim_next_offer(db))
-                sent_text = bot.send_message.await_args.kwargs["text"]
-                self.assertIn("HelloWork application submitted", sent_text)
-                self.assertNotIn("failed", sent_text.casefold())
+                self.assertEqual(submit.await_count, 2)
+                classify.assert_not_called()
+                bot.send_message.assert_not_called()
 
     async def test_missing_replay_message_is_closed_once(self):
         class Inbox:
