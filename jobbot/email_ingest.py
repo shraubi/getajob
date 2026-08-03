@@ -32,7 +32,7 @@ from jobbot.integrations.hellowork_email import (
 logger = logging.getLogger(__name__)
 
 _HELLOWORK_PARSER_REVISION = 2
-_HELLOWORK_APPLICATION_REVISION = 2
+_HELLOWORK_APPLICATION_REVISION = 3
 _REPLAY_BATCH_SIZE = 25
 
 
@@ -188,7 +188,7 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
     return handled
 
 
-async def process_offer_once(bot=None) -> str | None:
+async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
     queued = claim_next_offer(config.JOBS_DB_PATH)
     if not queued:
         return None
@@ -215,6 +215,13 @@ async def process_offer_once(bot=None) -> str | None:
             "HelloWork direct account application offer_id=%s status=%s detail=%s",
             offer_id, result.status, result.detail,
         )
+        if reports is not None:
+            reports.append({
+                "offer_id": offer_id,
+                "status": result.status,
+                "detail": result.detail,
+                "url": url,
+            })
         return result.status
     except HelloWorkError as exc:
         status = getattr(exc, "status", "failed")
@@ -227,6 +234,13 @@ async def process_offer_once(bot=None) -> str | None:
             "HelloWork direct account application failed offer_id=%s status=%s error_type=%s",
             offer_id, status, type(exc).__name__,
         )
+        if reports is not None:
+            reports.append({
+                "offer_id": offer_id,
+                "status": status,
+                "detail": f"error_type={type(exc).__name__}",
+                "url": url,
+            })
         return status
     except Exception as exc:
         finish_offer(
@@ -235,6 +249,13 @@ async def process_offer_once(bot=None) -> str | None:
             application_revision=_HELLOWORK_APPLICATION_REVISION,
         )
         logger.exception("HelloWork offer processing failed offer_id=%s", offer_id)
+        if reports is not None:
+            reports.append({
+                "offer_id": offer_id,
+                "status": "failed",
+                "detail": f"error_type={type(exc).__name__}",
+                "url": url,
+            })
         return "failed"
 
 
@@ -249,7 +270,8 @@ async def process_pending_offers(bot) -> dict[str, int]:
             recovered,
         )
     outcomes: dict[str, int] = {}
-    while outcome := await process_offer_once():
+    reports: list[dict[str, str]] = []
+    while outcome := await process_offer_once(reports=reports):
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     if outcomes:
         summary = ", ".join(
@@ -257,6 +279,29 @@ async def process_pending_offers(bot) -> dict[str, int]:
             for status, count in sorted(outcomes.items())
         )
         await _notify(bot, f"HelloWork applications: {summary}.")
+        attention = [
+            report for report in reports
+            if report["status"] not in {"submitted", "already_applied"}
+        ]
+        if attention:
+            lines = ["HelloWork attention needed:"]
+            for report in attention:
+                status = report["status"]
+                if status == "confirmation_required":
+                    action = "open this offer and finish the final confirmation"
+                elif status == "submission_unknown":
+                    action = "check HelloWork > Mes candidatures; if absent, open this offer"
+                elif status == "unavailable":
+                    action = "no Postuler control was available"
+                elif status == "auth_required":
+                    action = "HelloWork login or CAPTCHA needs attention"
+                else:
+                    action = "application failed; diagnostic follows"
+                lines.append(
+                    f'- offer {report["offer_id"]} [{status}]: {action}: '
+                    f'{report["url"]} ({report["detail"]})'
+                )
+            await _notify(bot, "\n".join(lines))
     return outcomes
 
 
