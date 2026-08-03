@@ -1,3 +1,6 @@
+Exit code: 0
+Wall time: 0.5 seconds
+Output:
 import asyncio
 import json
 import tempfile
@@ -29,8 +32,8 @@ HTML = """
 
 class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
     async def test_detects_accented_success_and_already_applied_text(self):
-        self.assertTrue(_application_already_recorded("Candidature envoyÃ©e"))
-        self.assertTrue(_application_already_recorded("Vous avez dÃ©jÃ  postulÃ©"))
+        self.assertTrue(_application_already_recorded("Candidature envoy\u00e9e"))
+        self.assertTrue(_application_already_recorded("Vous avez d\u00e9j\u00e0 postul\u00e9"))
         self.assertFalse(_application_already_recorded("Envoyer ma candidature"))
 
     async def test_parses_canonical_offer(self):
