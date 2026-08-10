@@ -76,7 +76,7 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
                     await preflight_hellowork_application(URL, resume, profile)
             self.assertEqual(raised.exception.status, "requirements_ambiguous")
 
-    async def test_account_application_is_exactly_two_clicks_without_local_resume(self):
+    async def test_account_application_fills_profile_across_multiple_steps(self):
         clicks = []
 
         class Locator:
@@ -100,7 +100,7 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
             async def inner_text(self):
                 return (
                     "Merci pour votre candidature"
-                    if self.page.stage >= 2 else "Offre HelloWork"
+                    if self.page.stage >= 3 else "Offre HelloWork"
                 )
 
         class Page:
@@ -159,19 +159,30 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         with tempfile.TemporaryDirectory() as directory:
-            auth = Path(directory) / "hellowork-auth.json"
+            root = Path(directory)
+            auth = root / "hellowork-auth.json"
             auth.write_text("{}", encoding="utf-8")
-            with patch("playwright.async_api.async_playwright", return_value=Manager()):
-                result = await submit_hellowork_account_application(URL, auth)
+            profile = root / "applicant.json"
+            profile.write_text('{"phone": "+33123456789"}', encoding="utf-8")
+            fill = AsyncMock(return_value=())
+            with (
+                patch("playwright.async_api.async_playwright", return_value=Manager()),
+                patch("jobbot.integrations.hellowork._fill_conventional_form", new=fill),
+            ):
+                result = await submit_hellowork_account_application(
+                    URL, auth, profile_path=profile
+                )
 
         self.assertEqual(
             result,
             HelloWorkSubmissionResult(
                 "submitted", URL,
-                "application_marker=1 confirm_controls=1 submit_controls=0",
+                "application_marker=1 completed_steps=2",
             ),
         )
-        self.assertEqual(clicks, ["apply", "confirm"])
+        self.assertEqual(clicks, ["apply", "confirm", "confirm"])
+        self.assertEqual(fill.await_count, 2)
+        self.assertEqual(fill.await_args.args[1]["phone"], "+33123456789")
 
     async def _posting_with_description(self, description):
         payload = HTML.replace(

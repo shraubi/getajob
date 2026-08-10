@@ -291,6 +291,8 @@ def requeue_legacy_screened_offers(
             """UPDATE inbound_offers
                SET status='pending', last_error='', updated_at=?
                WHERE provider='hellowork' AND application_revision < ? AND (
+                   status IN ('paused', 'failed', 'skipped')
+                   OR
                    (status='skipped' AND last_error='unsupported_vacancy')
                    OR
                    (status='failed' AND last_error=
