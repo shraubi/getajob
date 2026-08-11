@@ -431,7 +431,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
             "HelloWork applications: 2 submitted.",
         )
 
-    async def test_email_directly_applies_to_every_offer_without_scoring_or_resume(self):
+    async def test_email_directly_applies_to_every_offer_without_jobbot_preflight(self):
         first_url = "https://www.hellowork.com/fr-fr/emplois/81791563.html"
         second_url = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
         message = EmailMessage()
@@ -467,10 +467,17 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
             )
             with (
                 patch.object(email_ingest.config, "JOBS_DB_PATH", db),
-                patch.object(email_ingest.config, "HELLOWORK_AUTH_STATE_PATH", root / "auth.json"),
+                patch.object(
+                    email_ingest.config, "HELLOWORK_AUTH_STATE_PATH", root / "auth.json"
+                ),
+                patch.object(
+                    email_ingest.config, "APPLICATION_PROFILE_PATH", root / "applicant.json"
+                ),
                 patch.object(email_ingest.config, "HELLOWORK_IMAP_USERNAME", "bot"),
-                patch("jobbot.email_ingest.submit_hellowork_account_application", new=submit),
-                patch("jobbot.classifier.classify") as classify,
+                patch(
+                    "jobbot.email_ingest.submit_hellowork_account_application",
+                    new=submit,
+                ),
             ):
                 self.assertEqual(await email_ingest.ingest_email_once(bot, Inbox()), 1)
                 bot.reset_mock()
@@ -481,8 +488,28 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(get_offer(db, "81835625")["status"], "completed")
                 self.assertIsNone(claim_next_offer(db))
                 self.assertEqual(submit.await_count, 2)
-                classify.assert_not_called()
+                self.assertEqual(submit.await_args.kwargs["answer_db_path"], db)
                 bot.send_message.assert_not_called()
+
+    async def test_worker_reports_imap_failure_once_before_retrying(self):
+        bot = AsyncMock()
+        with (
+            patch.object(email_ingest.config, "HELLOWORK_IMAP_USERNAME", "bot"),
+            patch.object(email_ingest.config, "HELLOWORK_IMAP_APP_PASSWORD", "secret"),
+            patch(
+                "jobbot.email_ingest.ingest_email_once",
+                new=AsyncMock(side_effect=(RuntimeError("imap down"), asyncio.CancelledError())),
+            ),
+            patch("jobbot.email_ingest.asyncio.sleep", new=AsyncMock()),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await email_ingest.hellowork_email_worker(bot)
+
+        bot.send_message.assert_awaited_once()
+        self.assertIn(
+            "stopped processing mail",
+            bot.send_message.await_args.kwargs["text"],
+        )
 
     async def test_missing_replay_message_is_closed_once(self):
         class Inbox:

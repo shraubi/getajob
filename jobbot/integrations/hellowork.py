@@ -194,6 +194,19 @@ def _profile_values(raw: dict, resume_path: Path) -> dict[str, str]:
     }
 
 
+def _account_profile_values(raw: dict) -> dict[str, str]:
+    """Values safe to fill while keeping HelloWork's already-selected resume."""
+    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    return {
+        "first": str(raw.get("first_name") or "").strip(),
+        "last": str(raw.get("last_name") or "").strip(),
+        "email": str(raw.get("email") or "").strip(),
+        "phone": str(raw.get("phone") or "").strip(),
+        "address": str(raw.get("address") or location.get("address") or "").strip(),
+        **{str(key): str(value) for key, value in dict(raw.get("answers") or {}).items()},
+    }
+
+
 async def _fill_conventional_form(
     page, values: dict[str, str], resume_path: Path, *, upload_resume: bool
 ) -> tuple[str, ...]:
@@ -257,13 +270,15 @@ async def submit_hellowork_account_application(
     auth_state_path: Path,
     *,
     headless: bool = True,
+    profile_path: Path | None = None,
+    answer_db_path: Path | None = None,
 ) -> HelloWorkSubmissionResult:
     """Apply using the resume and applicant data already stored by HelloWork.
 
     Email-alert offers deliberately bypass vacancy classification, local resume
-    discovery, requirement scoring, profile form filling, and external ATS
-    redirects. The authenticated HelloWork flow is exactly two user actions:
-    open the offer and click Postuler, then confirm the account application.
+    discovery, requirement scoring, preflight, and external ATS redirects. The
+    authenticated flow keeps the resume selected in HelloWork and fills only
+    questions encountered after clicking Postuler.
     """
     canonical = parse_hellowork_url(url)[1]
     if not auth_state_path.is_file():
@@ -272,6 +287,14 @@ async def submit_hellowork_account_application(
             "HelloWork authentication state is missing",
         )
     try:
+        if answer_db_path is not None and profile_path is not None:
+            migrate_profile_json(answer_db_path, profile_path)
+            raw = profile_document(answer_db_path)
+        elif profile_path is not None and profile_path.is_file():
+            raw = json.loads(profile_path.read_text(encoding="utf-8"))
+        else:
+            raw = {}
+        values = _account_profile_values(raw)
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
@@ -324,65 +347,79 @@ async def submit_hellowork_account_application(
                     "external_form_unsupported", page.url,
                     "Offer uses an external recruiter form",
                 )
-            post_click_body = await page.locator("body").inner_text()
-            if (
-                _AUTH_RE.search(post_click_body)
-                or await page.locator('input[type="password"]:visible').count()
-            ):
-                await browser.close()
-                return HelloWorkSubmissionResult(
-                    "auth_required", page.url,
-                    "HelloWork login or verification is required",
+            clicked_steps = 0
+            for _ in range(5):
+                step_body = await page.locator("body").inner_text()
+                if _application_already_recorded(step_body) or _SUCCESS_RE.search(step_body):
+                    await context.storage_state(path=str(auth_state_path))
+                    result_url = page.url
+                    await browser.close()
+                    return HelloWorkSubmissionResult(
+                        "submitted", result_url,
+                        f"application_marker=1 completed_steps={clicked_steps}",
+                    )
+                if (
+                    _AUTH_RE.search(step_body)
+                    or await page.locator('input[type="password"]:visible').count()
+                ):
+                    await browser.close()
+                    return HelloWorkSubmissionResult(
+                        "auth_required", page.url,
+                        "HelloWork login or verification is required",
+                    )
+                if await page.locator(
+                    'iframe[src*="captcha" i], iframe[title*="challenge" i], '
+                    '[class*="captcha" i]'
+                ).count():
+                    await browser.close()
+                    return HelloWorkSubmissionResult(
+                        "auth_required", page.url,
+                        "HelloWork CAPTCHA requires attention",
+                    )
+                missing = await _fill_conventional_form(
+                    page, values, Path(), upload_resume=False
                 )
-            if await page.locator(
-                'iframe[src*="captcha" i], iframe[title*="challenge" i], '
-                '[class*="captcha" i]'
-            ).count():
-                await browser.close()
-                return HelloWorkSubmissionResult(
-                    "auth_required", page.url,
-                    "HelloWork CAPTCHA requires attention",
+                if missing:
+                    await context.storage_state(path=str(auth_state_path))
+                    await browser.close()
+                    return HelloWorkSubmissionResult(
+                        "answers_required", page.url,
+                        "Required HelloWork fields: "
+                        + ", ".join(missing[:8]),
+                    )
+                confirm = page.get_by_role(
+                    "button",
+                    name=re.compile(
+                        r"envoyer(?:\s+ma\s+candidature)?|confirmer|valider|"
+                        r"finaliser|terminer|continuer|suivant|postuler|candidater",
+                        re.I,
+                    ),
                 )
+                confirm_count = await confirm.count()
+                submit_controls = page.locator(
+                    'button[type="submit"]:visible, input[type="submit"]:visible'
+                )
+                submit_count = await submit_controls.count()
+                if not confirm_count and submit_count:
+                    confirm = submit_controls
+                elif not confirm_count:
+                    visible_button_count = await page.locator("button:visible").count()
+                    await browser.close()
+                    return HelloWorkSubmissionResult(
+                        "confirmation_required", page.url,
+                        f"completed_steps={clicked_steps} confirm_controls=0 "
+                        f"submit_controls=0 visible_buttons={visible_button_count}",
+                    )
+                await confirm.last.click()
+                clicked_steps += 1
+                await page.wait_for_timeout(1200)
 
-            confirm = page.get_by_role(
-                "button",
-                name=re.compile(
-                    r"envoyer(?:\s+ma\s+candidature)?|confirmer|valider|"
-                    r"finaliser|terminer|continuer|postuler|candidater",
-                    re.I,
-                ),
-            )
-            confirm_count = await confirm.count()
-            submit_controls = page.locator(
-                'button[type="submit"]:visible, input[type="submit"]:visible'
-            )
-            submit_count = await submit_controls.count()
-            visible_button_count = await page.locator("button:visible").count()
-            if not confirm_count and submit_count:
-                confirm = submit_controls
-            elif not confirm_count:
-                await browser.close()
-                return HelloWorkSubmissionResult(
-                    "confirmation_required", page.url,
-                    f"confirm_controls=0 submit_controls=0 "
-                    f"visible_buttons={visible_button_count}",
-                )
-            await confirm.last.click()
-            await page.wait_for_timeout(1200)
-            result_text = await page.locator("body").inner_text()
             await context.storage_state(path=str(auth_state_path))
             result_url = page.url
             await browser.close()
-            if _application_already_recorded(result_text) or _SUCCESS_RE.search(result_text):
-                return HelloWorkSubmissionResult(
-                    "submitted", result_url,
-                    f"application_marker=1 confirm_controls={confirm_count} "
-                    f"submit_controls={submit_count}",
-                )
             return HelloWorkSubmissionResult(
                 "submission_unknown", result_url,
-                f"application_marker=0 confirm_controls={confirm_count} "
-                f"submit_controls={submit_count} visible_buttons={visible_button_count}",
+                f"No explicit success confirmation after {clicked_steps} steps",
             )
     except HelloWorkError:
         raise

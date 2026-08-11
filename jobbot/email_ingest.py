@@ -32,7 +32,7 @@ from jobbot.integrations.hellowork_email import (
 logger = logging.getLogger(__name__)
 
 _HELLOWORK_PARSER_REVISION = 2
-_HELLOWORK_APPLICATION_REVISION = 3
+_HELLOWORK_APPLICATION_REVISION = 4
 _REPLAY_BATCH_SIZE = 25
 
 
@@ -199,6 +199,8 @@ async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = No
             url,
             config.HELLOWORK_AUTH_STATE_PATH,
             headless=config.ATS_BROWSER_HEADLESS,
+            profile_path=config.APPLICATION_PROFILE_PATH,
+            answer_db_path=config.JOBS_DB_PATH,
         )
         if result.status in {"submitted", "already_applied"}:
             finish_offer(
@@ -295,6 +297,8 @@ async def process_pending_offers(bot) -> dict[str, int]:
                     action = "no Postuler control was available"
                 elif status == "auth_required":
                     action = "HelloWork login or CAPTCHA needs attention"
+                elif status == "answers_required":
+                    action = "required fields could not be filled from the saved applicant profile"
                 else:
                     action = "application failed; diagnostic follows"
                 lines.append(
@@ -306,15 +310,32 @@ async def process_pending_offers(bot) -> dict[str, int]:
 
 
 async def hellowork_email_worker(bot) -> None:
-    if not config.HELLOWORK_IMAP_USERNAME or not config.HELLOWORK_IMAP_APP_PASSWORD:
-        raise RuntimeError("HelloWork email ingestion is enabled but IMAP credentials are missing")
+    failure_reported = False
     while True:
         try:
+            if not config.HELLOWORK_IMAP_USERNAME or not config.HELLOWORK_IMAP_APP_PASSWORD:
+                raise RuntimeError(
+                    "HelloWork email ingestion is enabled but IMAP credentials are missing"
+                )
             await ingest_email_once(bot)
             await process_pending_offers(bot)
+            if failure_reported:
+                await _notify(bot, "HelloWork email intake recovered.")
+                failure_reported = False
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("HelloWork email worker cycle failed")
+            if not failure_reported:
+                try:
+                    await _notify(
+                        bot,
+                        "HelloWork email intake stopped processing mail: "
+                        f"{type(exc).__name__}. It will keep retrying; check the bot logs "
+                        "and Gmail app-password settings.",
+                    )
+                except Exception:
+                    logger.exception("Could not report HelloWork email worker failure")
+                failure_reported = True
         await asyncio.sleep(config.HELLOWORK_IMAP_POLL_SECONDS)
 
