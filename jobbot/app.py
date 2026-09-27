@@ -2,9 +2,10 @@
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 
-from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from jobbot import config
 from jobbot.handlers import handle_callback, handle_vacancy_message
@@ -18,6 +19,18 @@ logger = logging.getLogger(__name__)
 def _clear_ready_file() -> None:
     with suppress(FileNotFoundError):
         config.BOT_READY_FILE.unlink()
+
+
+async def _health_command(update, context) -> None:
+    """Reply to an allowlisted, nonce-based production polling check."""
+    chat = update.effective_chat
+    message = update.effective_message
+    nonce = context.args[0] if context.args else ""
+    if not chat or not message or chat.id not in config.ALLOWED_CHAT_IDS:
+        return
+    if not re.fullmatch(r"[a-f0-9]{32}", nonce):
+        return
+    await message.reply_text(f"jobbot-ready:{nonce}")
 
 
 async def _mark_ready(application: Application) -> None:
@@ -60,6 +73,7 @@ def run() -> None:
         .build()
     )
     vacancy_filter = filters.TEXT & ~filters.COMMAND
+    app.add_handler(CommandHandler("health", _health_command))
     app.add_handler(MessageHandler(vacancy_filter, handle_vacancy_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling(allowed_updates=["message", "callback_query"])
