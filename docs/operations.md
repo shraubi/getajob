@@ -17,7 +17,7 @@ The `Delivery` workflow tests every pull request. A push to `main` or a manual `
 1. fetches `main`;
 2. resets tracked files to the fetched commit;
 3. rebuilds the lightweight image;
-4. restarts the bot and checks authenticated Telegram readiness;
+4. restarts the bot, checks authenticated Telegram readiness, and launches Chromium once with the HelloWork settings;
 5. sends one `/health` nonce from the existing authorized Telegram user session and checks the bot's reply;
 6. prints a content-free HelloWork state report;
 7. prunes unused image layers.
