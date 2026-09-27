@@ -314,6 +314,33 @@ def requeue_legacy_screened_offers(
         connection.close()
 
 
+def requeue_browser_launch_failures(
+    db_path: Path, *, application_revision: int
+) -> int:
+    """Retry once only when Chromium failed before any application page opened."""
+    if not db_path.is_file():
+        return 0
+    connection = _connect(db_path)
+    try:
+        cursor = connection.execute(
+            """UPDATE inbound_offers
+               SET status='pending', last_error='', application_revision=?,
+                   updated_at=?
+               WHERE provider='hellowork' AND status='failed'
+                 AND application_revision < ?
+                 AND lower(last_error) LIKE '%browsertype.launch%'""",
+            (
+                application_revision,
+                datetime.now(timezone.utc).isoformat(),
+                application_revision,
+            ),
+        )
+        connection.commit()
+        return cursor.rowcount
+    finally:
+        connection.close()
+
+
 def claim_next_offer(db_path: Path) -> dict | None:
     connection = _connect(db_path)
     try:
