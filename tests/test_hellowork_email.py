@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email import policy
 from email.parser import BytesParser
@@ -301,6 +302,40 @@ class EmailStoreTests(unittest.TestCase):
                 requeue_legacy_screened_offers(db, application_revision=2),
                 0,
             )
+
+    def test_production_claim_skips_old_replayed_backlog(self):
+        offers = tuple(
+            (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
+            for index in (1, 2, 3)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers,
+            )
+            old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    """UPDATE inbound_offers SET created_at=?, attempts=1,
+                       application_revision=4 WHERE offer_id='1'""",
+                    (old,),
+                )
+                connection.execute(
+                    """UPDATE inbound_offers SET created_at=?, attempts=1,
+                       application_revision=5 WHERE offer_id='2'""",
+                    (old,),
+                )
+            self.assertEqual(
+                claim_next_offer(db, min_recovery_revision=5)["offer_id"], "2"
+            )
+            finish_offer(db, "2", "completed", application_revision=5)
+            self.assertEqual(
+                claim_next_offer(db, min_recovery_revision=5)["offer_id"], "3"
+            )
+            finish_offer(db, "3", "completed", application_revision=5)
+            self.assertIsNone(claim_next_offer(db, min_recovery_revision=5))
+            self.assertEqual(get_offer(db, "1")["status"], "pending")
 
     def test_requeues_only_pre_submit_browser_failure_once(self):
         offers = tuple(

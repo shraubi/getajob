@@ -341,7 +341,9 @@ def requeue_browser_launch_failures(
         connection.close()
 
 
-def claim_next_offer(db_path: Path) -> dict | None:
+def claim_next_offer(
+    db_path: Path, *, min_recovery_revision: int | None = None
+) -> dict | None:
     connection = _connect(db_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -351,10 +353,21 @@ def claim_next_offer(db_path: Path) -> dict | None:
                WHERE status='processing' AND updated_at < ?""",
             (datetime.now(timezone.utc).isoformat(), stale),
         )
-        row = connection.execute(
-            """SELECT * FROM inbound_offers WHERE status='pending'
-               ORDER BY created_at LIMIT 1"""
-        ).fetchone()
+        if min_recovery_revision is None:
+            row = connection.execute(
+                """SELECT * FROM inbound_offers WHERE status='pending'
+                   ORDER BY created_at LIMIT 1"""
+            ).fetchone()
+        else:
+            recent = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            row = connection.execute(
+                """SELECT * FROM inbound_offers
+                   WHERE status='pending' AND provider='hellowork'
+                     AND (application_revision >= ?
+                          OR (attempts=0 AND created_at >= ?))
+                   ORDER BY created_at LIMIT 1""",
+                (min_recovery_revision, recent),
+            ).fetchone()
         if not row:
             connection.rollback()
             return None
