@@ -93,6 +93,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         return report
     if not email_rows and not offer_rows:
         report["status"] = "WAITING_FOR_LIVE_TRAFFIC"
+    elif active_rows:
+        report["status"] = "WAITING_FOR_TERMINAL_OUTCOME"
     elif offers.get("completed", 0):
         if report["unverified_completed_count"]:
             report["status"] = "UNVERIFIED_COMPLETION"
