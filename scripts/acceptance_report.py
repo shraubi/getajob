@@ -16,6 +16,32 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _failure_category(detail: str) -> str:
+    """Map private failure text to a fixed, non-identifying reason code."""
+    value = detail.casefold()
+    if "executable doesn\u0027t exist" in value or "browser is missing" in value:
+        return "browser_missing"
+    if "browsertype.launch" in value:
+        return "browser_launch"
+    if "timeouterror" in value or "timed out" in value:
+        return "page_timeout"
+    if "net::err_" in value:
+        return "network_error"
+    if "captcha" in value:
+        return "captcha"
+    if "auth_required" in value or "login or verification" in value:
+        return "authentication_required"
+    if "confirmation_required" in value:
+        return "confirmation_required"
+    if "submission_unknown" in value:
+        return "submission_unknown"
+    if "strict mode violation" in value:
+        return "ambiguous_form_control"
+    if "unavailable" in value:
+        return "offer_unavailable"
+    return "other_failure"
+
+
 def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int = 30) -> dict:
     """Return a safe summary; never expose messages, URLs, or stored error text."""
     report = {
@@ -24,6 +50,7 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "checked_at": now.isoformat(),
         "email_statuses": {},
         "offer_statuses": {},
+        "failure_categories": {},
         "stale_offer_count": 0,
         "attention_offer_count": 0,
         "rechecked_offer_count": 0,
@@ -65,6 +92,10 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     offers = Counter(str(row["status"]) for row in offer_rows)
     report["email_statuses"] = dict(sorted(emails.items()))
     report["offer_statuses"] = dict(sorted(offers.items()))
+    report["failure_categories"] = dict(sorted(Counter(
+        _failure_category(str(row["last_error"] or ""))
+        for row in offer_rows if row["status"] in {"failed", "paused"}
+    ).items()))
     cutoff = now - timedelta(minutes=stale_minutes)
     stale_count = sum(
         _utc(str(row["updated_at"])) < cutoff for row in active_rows
