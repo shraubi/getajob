@@ -17,7 +17,6 @@ from jobbot.email_store import (
     mark_replay_unavailable,
     record_email_offers,
     record_rejected_email,
-    requeue_legacy_screened_offers,
     requeue_browser_launch_failures,
     replayable_rejected_uids,
 )
@@ -36,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 _HELLOWORK_PARSER_REVISION = 2
 _HELLOWORK_APPLICATION_REVISION = 5
-_LEGACY_SCREENING_REVISION = 4
 _REPLAY_BATCH_SIZE = 25
 
 
@@ -215,7 +213,10 @@ def _safe_failure_detail(exc: Exception) -> str:
 
 
 async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
-    queued = claim_next_offer(config.JOBS_DB_PATH)
+    queued = claim_next_offer(
+        config.JOBS_DB_PATH,
+        min_recovery_revision=_HELLOWORK_APPLICATION_REVISION,
+    )
     if not queued:
         return None
     offer_id = queued["offer_id"]
@@ -288,10 +289,6 @@ async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = No
 
 
 async def process_pending_offers(bot) -> dict[str, int]:
-    recovered = requeue_legacy_screened_offers(
-        config.JOBS_DB_PATH,
-        application_revision=_LEGACY_SCREENING_REVISION,
-    )
     browser_recovered = requeue_browser_launch_failures(
         config.JOBS_DB_PATH,
         application_revision=_HELLOWORK_APPLICATION_REVISION,
@@ -300,11 +297,6 @@ async def process_pending_offers(bot) -> dict[str, int]:
         logger.info(
             "HelloWork requeued pre-submit browser launch failures count=%s",
             browser_recovered,
-        )
-    if recovered:
-        logger.info(
-            "HelloWork requeued offers blocked by legacy screening count=%s",
-            recovered,
         )
     outcomes: dict[str, int] = {}
     reports: list[dict[str, str]] = []
