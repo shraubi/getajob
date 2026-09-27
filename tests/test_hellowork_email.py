@@ -24,6 +24,7 @@ from jobbot.email_store import (
     record_email_offers,
     record_rejected_email,
     requeue_legacy_screened_offers,
+    requeue_browser_launch_failures,
     replayable_rejected_uids,
 )
 from jobbot.integrations.hellowork import HelloWorkSubmissionResult
@@ -300,6 +301,42 @@ class EmailStoreTests(unittest.TestCase):
                 requeue_legacy_screened_offers(db, application_revision=2),
                 0,
             )
+
+    def test_requeues_only_pre_submit_browser_failure_once(self):
+        offers = tuple(
+            (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
+            for index in (1, 2, 3)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers,
+            )
+            finish_offer(
+                db, "1", "failed",
+                "HelloWorkError: HelloWork account application failed: "
+                "Error: BrowserType.launch: browser could not start",
+                application_revision=4,
+            )
+            finish_offer(
+                db, "2", "failed", "HelloWorkError: submit timeout",
+                application_revision=4,
+            )
+            finish_offer(
+                db, "3", "completed", "account_marker_recheck=1 completed_steps=2",
+                application_revision=4,
+            )
+            self.assertEqual(
+                requeue_browser_launch_failures(db, application_revision=5), 1
+            )
+            self.assertEqual(
+                requeue_browser_launch_failures(db, application_revision=5), 0
+            )
+            self.assertEqual(get_offer(db, "1")["status"], "pending")
+            self.assertEqual(get_offer(db, "1")["application_revision"], 5)
+            self.assertEqual(get_offer(db, "2")["status"], "failed")
+            self.assertEqual(get_offer(db, "3")["status"], "completed")
 
     def test_existing_schema_migrates_and_rejected_receipt_can_be_queued(self):
         offers = (("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),)
