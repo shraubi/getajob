@@ -76,7 +76,7 @@ jobs:
             test "$(docker inspect --format '{{.RestartCount}}' "$bot_id")" = "0"
             test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
             # A real user-session message proves Telegram polling and reply delivery.
-            docker compose exec -T bot python scripts/acceptance_telegram.py
+            docker compose exec -T bot python -m scripts.acceptance_telegram
             # Application evidence is assessed separately; deploy allows a fresh waiting state.
-            docker compose exec -T bot python scripts/acceptance_report.py \
+            docker compose exec -T bot python -m scripts.acceptance_report \
               --db /app/storage/jobs.db --since "$deployed_since" --allow-waiting

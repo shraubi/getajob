@@ -35,5 +35,5 @@ jobs:
             test -n "$bot_id"
             test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
             test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
-            docker compose exec -T bot python scripts/acceptance_report.py \
+            docker compose exec -T bot python -m scripts.acceptance_report \
               --db /app/storage/jobs.db
