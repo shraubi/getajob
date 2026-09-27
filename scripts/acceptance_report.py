@@ -54,6 +54,7 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "stale_offer_count": 0,
         "attention_offer_count": 0,
         "rechecked_offer_count": 0,
+        "rechecked_new_submission_count": 0,
         "unverified_completed_count": 0,
         "reasons": [],
     }
@@ -111,6 +112,12 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     report["stale_offer_count"] = stale_count
     report["attention_offer_count"] = attention_count
     report["rechecked_offer_count"] = rechecked_count
+    report["rechecked_new_submission_count"] = sum(
+        row["status"] == "completed"
+        and str(row["last_error"] or "").startswith("account_marker_recheck=1")
+        and "completed_steps=" in str(row["last_error"] or "")
+        for row in offer_rows
+    )
     report["unverified_completed_count"] = offers.get("completed", 0) - rechecked_count
     if stale_count:
         report["reasons"].append("offers_stuck_in_queue")
@@ -133,6 +140,9 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         if report["unverified_completed_count"]:
             report["status"] = "UNVERIFIED_COMPLETION"
             report["reasons"].append("account_marker_not_rechecked")
+        elif not report["rechecked_new_submission_count"]:
+            report["status"] = "NO_NEW_SUBMISSION"
+            report["reasons"].append("only_previously_applied_offers")
         else:
             report["status"] = "RECHECKED_APPLIED"
     else:
@@ -157,7 +167,10 @@ def main() -> int:
     )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     passing = report["status"] == "RECHECKED_APPLIED" or (
-        args.allow_waiting and report["status"].startswith("WAITING_")
+        args.allow_waiting and (
+            report["status"].startswith("WAITING_")
+            or report["status"] == "NO_NEW_SUBMISSION"
+        )
     )
     return 0 if passing else 1
 
