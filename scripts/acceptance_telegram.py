@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import secrets
 import sqlite3
 import tempfile
@@ -51,10 +53,13 @@ async def probe(timeout_seconds: int = 30) -> dict[str, str]:
             if not await client.is_user_authorized():
                 raise ProbeError("user_session_expired")
             user = await client.get_me()
-            if user is None or user.id not in config.ALLOWED_CHAT_IDS:
-                raise ProbeError("user_not_allowlisted")
+            if user is None:
+                raise ProbeError("user_session_identity_missing")
+            signature = hmac.new(
+                config.TELEGRAM_BOT_TOKEN.encode(), nonce.encode(), hashlib.sha256
+            ).hexdigest()
             async with client.conversation(identity.username, timeout=timeout_seconds) as chat:
-                await chat.send_message(f"/health {nonce}")
+                await chat.send_message(f"/health {nonce} {signature}")
                 expected = f"jobbot-ready:{nonce}"
                 async def receive() -> None:
                     for _ in range(8):
