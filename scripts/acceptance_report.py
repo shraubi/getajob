@@ -24,8 +24,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "checked_at": now.isoformat(),
         "email_statuses": {},
         "offer_statuses": {},
-        "stale_offer_ids": [],
-        "attention_offer_ids": [],
+        "stale_offer_count": 0,
+        "attention_offer_count": 0,
         "reasons": [],
     }
     if not db_path.is_file():
@@ -72,8 +72,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         str(row["offer_id"]) for row in offer_rows
         if row["status"] in {"failed", "paused"}
     ]
-    report["stale_offer_ids"] = stale[:10]
-    report["attention_offer_ids"] = attention[:10]
+    report["stale_offer_count"] = len(stale)
+    report["attention_offer_count"] = len(attention)
     if stale:
         report["reasons"].append("offers_stuck_in_queue")
     if emails.get("rejected", 0):
