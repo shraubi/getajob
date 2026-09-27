@@ -20,6 +20,10 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
+      - name: Check acceptance probes import from repository root
+        run: |
+          python -m scripts.acceptance_report --help > /dev/null
+          python -c "import scripts.acceptance_telegram"
       - name: Validate production Compose configuration
         run: |
           touch .env
