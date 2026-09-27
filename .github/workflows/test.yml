@@ -1,9 +1,13 @@
-name: Tests
+name: Delivery
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   unit:
@@ -20,3 +24,9 @@ jobs:
         run: |
           touch .env
           docker compose config --quiet
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: unit
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit

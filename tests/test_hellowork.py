@@ -11,6 +11,7 @@ from jobbot.integrations.hellowork import (
     HelloWorkError,
     HelloWorkSubmissionResult,
     _application_already_recorded,
+    _recheck_account_application,
     check_requirements,
     fetch_hellowork_posting,
     parse_hellowork_url,
@@ -177,12 +178,46 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
             result,
             HelloWorkSubmissionResult(
                 "submitted", URL,
-                "application_marker=1 completed_steps=2",
+                "account_marker_recheck=1 completed_steps=2",
             ),
         )
         self.assertEqual(clicks, ["apply", "confirm", "confirm"])
         self.assertEqual(fill.await_count, 2)
         self.assertEqual(fill.await_args.args[1]["phone"], "+33123456789")
+
+    async def test_recheck_requires_fresh_marker_on_the_same_offer(self):
+        class Body:
+            def __init__(self, text):
+                self.text = text
+
+            async def inner_text(self):
+                return self.text
+
+        class Page:
+            def __init__(self, url, text):
+                self.url = url
+                self.text = text
+                self.clicks = 0
+                self.visits = 0
+
+            async def goto(self, url, **kwargs):
+                self.visits += 1
+
+            async def wait_for_timeout(self, milliseconds):
+                return None
+
+            def locator(self, selector):
+                return Body(self.text)
+
+        verified = Page(URL, "Vous avez déjà postulé")
+        self.assertTrue(await _recheck_account_application(verified, URL))
+        self.assertEqual(verified.visits, 1)
+        self.assertEqual(verified.clicks, 0)
+        self.assertFalse(await _recheck_account_application(Page(URL, "Postuler"), URL))
+        other_url = "https://www.hellowork.com/fr-fr/emplois/99999999.html"
+        self.assertFalse(
+            await _recheck_account_application(Page(other_url, "Vous avez déjà postulé"), URL)
+        )
 
     async def _posting_with_description(self, description):
         payload = HTML.replace(

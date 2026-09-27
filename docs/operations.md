@@ -12,15 +12,21 @@ Do not edit tracked source files on the VM. Deployment treats GitHub `main` as t
 
 ## Deploy
 
-A push to `main` runs tests and one serialized production deploy. The deploy:
+The `Delivery` workflow tests every pull request. A push to `main` or a manual `Delivery` run deploys only after the same commit passes tests. The deploy:
 
 1. fetches `main`;
 2. resets tracked files to the fetched commit;
 3. rebuilds the lightweight image;
-4. restarts the bot;
-5. prunes unused image layers.
+4. restarts the bot and checks authenticated Telegram readiness;
+5. sends one `/health` nonce from the existing authorized Telegram user session and checks the bot's reply;
+6. prints a content-free HelloWork state report;
+7. prunes unused image layers.
 
-The workflow can also be started manually from GitHub Actions.
+Start `Delivery` manually from GitHub Actions to repeat both tests and deployment. The separate `Application delivery evidence` workflow runs hourly on a GitHub hosted runner and can also be started manually. It makes a short read-only check on the VM: deployed SHA, container health, and the last 24 hours of HelloWork outcomes. Its GitHub check is green only when at least one **new submission** has a fresh HelloWork applied marker and every offer in the window has finished without failure. When no offers arrive, the check stays red with `WAITING_FOR_LIVE_TRAFFIC`; this is an explicit lack of evidence, not a failed application. GitHub Actions logs include aggregate counts, fixed failure categories, and reason codes only.
+
+The Telegram probe requires the existing user session, `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH` on the VM. It sends one private `/health` command to the bot and never clicks an application button. If the session is missing or unauthorized, deployment fails with a token-free reason.
+
+HelloWork report states are `FAIL`, `WAITING_FOR_LIVE_TRAFFIC`, `WAITING_FOR_TERMINAL_OUTCOME`, `UNVERIFIED_COMPLETION`, `NO_NEW_SUBMISSION`, and `RECHECKED_APPLIED`. The application flow reloads the offer page in the authenticated account after the submit step and records whether HelloWork shows an applied marker. `RECHECKED_APPLIED` means that marker was seen on the fresh page; it does not prove a recruiter received or read the application. Legacy completions and missing markers remain unverified. Offers marked as already applied count as existing applications, not new submissions. Failed, rejected, paused, skipped, unknown, or stuck offers make the report fail. The deploy check allows a waiting state because a fresh deployment may not yet have incoming mail; application evidence is a separate check. The report never includes email text, URLs, offer IDs, profile fields, or raw exception messages.
 
 ## Rollback
 

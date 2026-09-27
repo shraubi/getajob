@@ -1,0 +1,39 @@
+name: Application delivery evidence
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  assess:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect deployed release and HelloWork outcomes
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -eu
+            cd ${{ secrets.APP_DIR }}
+            git fetch origin main
+            deployed_sha="$(git rev-parse HEAD)"
+            current_sha="$(git rev-parse origin/main)"
+            echo "deployed_sha=$deployed_sha current_sha=$current_sha"
+            test "$deployed_sha" = "$current_sha"
+            docker compose ps
+            bot_id="$(docker compose ps -q bot)"
+            test -n "$bot_id"
+            test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
+            test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
+            docker compose exec -T bot python scripts/acceptance_report.py \
+              --db /app/storage/jobs.db
