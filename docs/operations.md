@@ -12,15 +12,21 @@ Do not edit tracked source files on the VM. Deployment treats GitHub `main` as t
 
 ## Deploy
 
-A push to `main` runs tests and one serialized production deploy. The deploy:
+The `Delivery` workflow tests every pull request. A push to `main` or a manual `Delivery` run deploys only after the same commit passes tests. The deploy:
 
 1. fetches `main`;
 2. resets tracked files to the fetched commit;
 3. rebuilds the lightweight image;
-4. restarts the bot;
-5. prunes unused image layers.
+4. restarts the bot and checks authenticated Telegram readiness;
+5. sends one `/health` nonce from the existing authorized Telegram user session and checks the bot's reply;
+6. prints a content-free HelloWork state report;
+7. prunes unused image layers.
 
-The workflow can also be started manually from GitHub Actions.
+Start `Delivery` manually from GitHub Actions to repeat both tests and deployment. The separate `Production assessment` workflow runs hourly and can also be started manually. It checks the deployed SHA, container health, and the last 24 hours of HelloWork queue outcomes. GitHub Actions job logs are the operator report; no Telegram or VM log copying is required.
+
+The Telegram probe requires the existing user session, `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH` on the VM. It sends one private `/health` command to the bot and never clicks an application button. If the session is missing or unauthorized, deployment fails with a token-free reason.
+
+HelloWork report states are `FAIL`, `WAITING_FOR_LIVE_TRAFFIC`, `WAITING_FOR_TERMINAL_OUTCOME`, and `RECORDED_COMPLETION`. `RECORDED_COMPLETION` means the bot persisted a completed offer; it is not yet an independent HelloWork account confirmation. The report never includes email text, URLs, profile fields, or raw exception messages.
 
 ## Rollback
 
