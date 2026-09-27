@@ -11,7 +11,7 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("YOUR_CHAT_ID", "1")
 
 from jobbot import config
-from jobbot.app import _mark_ready, _mark_stopped
+from jobbot.app import _health_command, _mark_ready, _mark_stopped
 from jobbot.logging_config import configure_logging
 
 
@@ -51,6 +51,30 @@ class AppReadinessTests(unittest.IsolatedAsyncioTestCase):
                 await _mark_stopped(application)
                 self.assertFalse(ready_file.exists())
                 self.assertNotIn("telegram_queue_task", application.bot_data)
+
+
+class AppHealthCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_allowlisted_probe_echoes_nonce(self):
+        replies = []
+        async def reply(text):
+            replies.append(text)
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=1),
+            effective_message=SimpleNamespace(reply_text=reply),
+        )
+        await _health_command(update, SimpleNamespace(args=["a" * 32]))
+        self.assertEqual(replies, ["jobbot-ready:" + "a" * 32])
+
+    async def test_other_chat_is_ignored(self):
+        replies = []
+        async def reply(text):
+            replies.append(text)
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=999),
+            effective_message=SimpleNamespace(reply_text=reply),
+        )
+        await _health_command(update, SimpleNamespace(args=["a" * 32]))
+        self.assertEqual(replies, [])
 
 
 if __name__ == "__main__":
