@@ -52,7 +52,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(report["status"], "FAIL")
         self.assertIn("offers_stuck_in_queue", report["reasons"])
         self.assertIn("applications_failed", report["reasons"])
-        self.assertEqual(report["stale_offer_ids"], ["123"])
+        self.assertEqual(report["stale_offer_count"], 1)
+        self.assertEqual(report["attention_offer_count"], 1)
+        self.assertNotIn("123", str(report))
         self.assertNotIn("canonical_url", str(report))
 
 
