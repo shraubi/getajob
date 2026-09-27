@@ -26,6 +26,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "offer_statuses": {},
         "stale_offer_count": 0,
         "attention_offer_count": 0,
+        "rechecked_offer_count": 0,
+        "unverified_completed_count": 0,
         "reasons": [],
     }
     if not db_path.is_file():
@@ -44,13 +46,13 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
                 (since.isoformat(), since.isoformat()),
             ).fetchall()
             offer_rows = connection.execute(
-                """SELECT offer_id, status, created_at, updated_at
+                """SELECT status, last_error, created_at, updated_at
                    FROM inbound_offers WHERE provider='hellowork'
                      AND (created_at >= ? OR updated_at >= ?)""",
                 (since.isoformat(), since.isoformat()),
             ).fetchall()
             active_rows = connection.execute(
-                """SELECT offer_id, status, updated_at FROM inbound_offers
+                """SELECT status, updated_at FROM inbound_offers
                    WHERE provider='hellowork' AND status IN ('pending', 'processing')"""
             ).fetchall()
         finally:
@@ -64,17 +66,22 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     report["email_statuses"] = dict(sorted(emails.items()))
     report["offer_statuses"] = dict(sorted(offers.items()))
     cutoff = now - timedelta(minutes=stale_minutes)
-    stale = [
-        str(row["offer_id"]) for row in active_rows
-        if _utc(str(row["updated_at"])) < cutoff
-    ]
-    attention = [
-        str(row["offer_id"]) for row in offer_rows
-        if row["status"] in {"failed", "paused"}
-    ]
-    report["stale_offer_count"] = len(stale)
-    report["attention_offer_count"] = len(attention)
-    if stale:
+    stale_count = sum(
+        _utc(str(row["updated_at"])) < cutoff for row in active_rows
+    )
+    attention_count = sum(
+        row["status"] in {"failed", "paused"} for row in offer_rows
+    )
+    rechecked_count = sum(
+        row["status"] == "completed"
+        and str(row["last_error"] or "").startswith("account_marker_recheck=1")
+        for row in offer_rows
+    )
+    report["stale_offer_count"] = stale_count
+    report["attention_offer_count"] = attention_count
+    report["rechecked_offer_count"] = rechecked_count
+    report["unverified_completed_count"] = offers.get("completed", 0) - rechecked_count
+    if stale_count:
         report["reasons"].append("offers_stuck_in_queue")
     if emails.get("rejected", 0):
         report["reasons"].append("emails_rejected")
@@ -87,7 +94,11 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     if not email_rows and not offer_rows:
         report["status"] = "WAITING_FOR_LIVE_TRAFFIC"
     elif offers.get("completed", 0):
-        report["status"] = "RECORDED_COMPLETION"
+        if report["unverified_completed_count"]:
+            report["status"] = "UNVERIFIED_COMPLETION"
+            report["reasons"].append("account_marker_not_rechecked")
+        else:
+            report["status"] = "RECHECKED_APPLIED"
     else:
         report["status"] = "WAITING_FOR_TERMINAL_OUTCOME"
     return report
@@ -98,6 +109,10 @@ def main() -> int:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--since", help="ISO-8601 timestamp; defaults to 24 hours ago")
     parser.add_argument("--stale-minutes", type=int, default=30)
+    parser.add_argument(
+        "--allow-waiting", action="store_true",
+        help="Allow deploy to pass before live application traffic arrives",
+    )
     args = parser.parse_args()
     now = datetime.now(timezone.utc)
     since = _utc(args.since) if args.since else now - timedelta(hours=24)
@@ -105,7 +120,10 @@ def main() -> int:
         args.db, since=since, now=now, stale_minutes=max(1, args.stale_minutes)
     )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-    return 1 if report["status"] == "FAIL" else 0
+    passing = report["status"] == "RECHECKED_APPLIED" or (
+        args.allow_waiting and report["status"].startswith("WAITING_")
+    )
+    return 0 if passing else 1
 
 
 if __name__ == "__main__":
