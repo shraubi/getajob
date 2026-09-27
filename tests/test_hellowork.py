@@ -177,7 +177,7 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
             result,
             HelloWorkSubmissionResult(
                 "submitted", URL,
-                "application_marker=1 completed_steps=2",
+                "account_marker_recheck=1 completed_steps=2",
             ),
         )
         self.assertEqual(clicks, ["apply", "confirm", "confirm"])
