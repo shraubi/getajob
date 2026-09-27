@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections import Counter
 from email import policy
 from email.parser import BytesParser
 
@@ -188,6 +190,28 @@ async def ingest_email_once(bot, inbox: GmailInbox | None = None) -> int:
     return handled
 
 
+def _safe_failure_detail(exc: Exception) -> str:
+    """Keep the useful first error line without URLs, paths, or personal fields."""
+    first = str(exc).splitlines()[0].strip() if str(exc) else ""
+    if not first:
+        return type(exc).__name__
+    for needle, label in (
+        ("Executable doesn't exist", "Playwright browser is missing"),
+        ("BrowserType.launch", "Browser could not start"),
+        ("TimeoutError", "HelloWork page timed out"),
+        ("strict mode violation", "HelloWork form control is ambiguous"),
+        ("TargetClosedError", "Browser closed unexpectedly"),
+        ("net::ERR_", "Network error while loading HelloWork"),
+    ):
+        if needle.casefold() in first.casefold():
+            return label
+    first = re.sub(r"https?://\S+", "[url]", first)
+    first = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[email]", first)
+    first = re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[number]", first)
+    first = re.sub(r"(?:/|[A-Za-z]:\\)(?:[^\s:]+[/\\])*[^\s:]+", "[path]", first)
+    return first[:180]
+
+
 async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
     queued = claim_next_offer(config.JOBS_DB_PATH)
     if not queued:
@@ -233,14 +257,14 @@ async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = No
             application_revision=_HELLOWORK_APPLICATION_REVISION,
         )
         logger.warning(
-            "HelloWork direct account application failed offer_id=%s status=%s error_type=%s",
-            offer_id, status, type(exc).__name__,
+            "HelloWork direct account application failed offer_id=%s status=%s reason=%s",
+            offer_id, status, exc,
         )
         if reports is not None:
             reports.append({
                 "offer_id": offer_id,
                 "status": status,
-                "detail": f"error_type={type(exc).__name__}",
+                "detail": _safe_failure_detail(exc),
                 "url": url,
             })
         return status
@@ -255,7 +279,7 @@ async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = No
             reports.append({
                 "offer_id": offer_id,
                 "status": "failed",
-                "detail": f"error_type={type(exc).__name__}",
+                "detail": _safe_failure_detail(exc),
                 "url": url,
             })
         return "failed"
@@ -277,35 +301,28 @@ async def process_pending_offers(bot) -> dict[str, int]:
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     if outcomes:
         summary = ", ".join(
-            f"{count} {status}"
-            for status, count in sorted(outcomes.items())
+            f"{count} {status}" for status, count in sorted(outcomes.items())
         )
-        await _notify(bot, f"HelloWork applications: {summary}.")
+        lines = [f"HelloWork applications: {summary}."]
         attention = [
             report for report in reports
             if report["status"] not in {"submitted", "already_applied"}
         ]
         if attention:
-            lines = ["HelloWork attention needed:"]
-            for report in attention:
-                status = report["status"]
-                if status == "confirmation_required":
-                    action = "open this offer and finish the final confirmation"
-                elif status == "submission_unknown":
-                    action = "check HelloWork > Mes candidatures; if absent, open this offer"
-                elif status == "unavailable":
-                    action = "no Postuler control was available"
-                elif status == "auth_required":
-                    action = "HelloWork login or CAPTCHA needs attention"
-                elif status == "answers_required":
-                    action = "required fields could not be filled from the saved applicant profile"
-                else:
-                    action = "application failed; diagnostic follows"
-                lines.append(
-                    f'- offer {report["offer_id"]} [{status}]: {action}: '
-                    f'{report["url"]} ({report["detail"]})'
-                )
-            await _notify(bot, "\n".join(lines))
+            reasons = Counter(
+                (report["status"], report["detail"]) for report in attention
+            )
+            lines.append("Reasons:")
+            for (status, detail), count in reasons.most_common(5):
+                lines.append(f"- {count} x {status}: {detail}")
+            if len(reasons) > 5:
+                lines.append(f"- {len(reasons) - 5} other reason groups")
+            lines.append("Offers to inspect:")
+            for report in attention[:3]:
+                lines.append(f'- {report["offer_id"]}: {report["url"]}')
+            if len(attention) > 3:
+                lines.append(f"- and {len(attention) - 3} more")
+        await _notify(bot, "\n".join(lines))
     return outcomes
 
 
