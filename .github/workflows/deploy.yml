@@ -1,9 +1,7 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -33,10 +31,28 @@ jobs:
               docker builder prune -af || true
               docker system df || true
             }
-            trap cleanup EXIT
+            on_exit() {
+              code=$?
+              trap - EXIT
+              if [ "$code" -ne 0 ]; then
+                echo "Delivery failed; safe container diagnostics follow."
+                docker compose ps || true
+                bot_id="$(docker compose ps -q bot || true)"
+                if [ -n "$bot_id" ]; then
+                  docker inspect --format \
+                    'state={{.State.Status}} health={{.State.Health.Status}} restarts={{.RestartCount}}' \
+                    "$bot_id" || true
+                fi
+              fi
+              cleanup
+              exit "$code"
+            }
+            trap on_exit EXIT
 
+            deployed_since="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
             git fetch origin main
-            git reset --hard origin/main
+            test "$(git rev-parse origin/main)" = "${{ github.sha }}"
+            git reset --hard "${{ github.sha }}"
 
             # Release the previous deployment's images before rebuilding.
             # Bind-mounted application data is preserved by omitting --volumes.
@@ -48,25 +64,19 @@ jobs:
             # browser revisions left behind by previous Playwright releases.
             docker compose run --rm --no-deps bot python -m playwright uninstall --all || true
             docker compose run --rm --no-deps bot python -m playwright install --only-shell chromium
-            if ! docker compose up -d --wait --wait-timeout 90 bot ralph; then
-              echo "Bot failed its authenticated Telegram readiness check."
-              docker compose ps || true
-              docker compose logs --no-color --tail=200 bot || true
-              bot_id="$(docker compose ps -q bot || true)"
-              if [ -n "$bot_id" ]; then
-                docker inspect --format \
-                  'state={{.State.Status}} health={{.State.Health.Status}} restarts={{.RestartCount}}' \
-                  "$bot_id" || true
-              fi
-              exit 1
-            fi
+            docker compose up -d --wait --wait-timeout 90 bot ralph
 
             # The bot becomes healthy only after Telegram accepts its token and
             # the polling application finishes initialization.
             docker compose ps
-            docker compose logs --no-color --tail=100 bot
+            test "$(git rev-parse HEAD)" = "${{ github.sha }}"
             bot_id="$(docker compose ps -q bot)"
             test -n "$bot_id"
             test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
             test "$(docker inspect --format '{{.RestartCount}}' "$bot_id")" = "0"
             test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
+            # A real user-session message proves Telegram polling and reply delivery.
+            docker compose exec -T bot python scripts/acceptance_telegram.py
+            # No new mail is an explicit waiting state, never a false success.
+            docker compose exec -T bot python scripts/acceptance_report.py \
+              --db /app/storage/jobs.db --since "$deployed_since"
