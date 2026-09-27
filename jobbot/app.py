@@ -1,6 +1,8 @@
 """Telegram application wiring."""
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import re
 from contextlib import suppress
@@ -22,13 +24,19 @@ def _clear_ready_file() -> None:
 
 
 async def _health_command(update, context) -> None:
-    """Reply to an allowlisted, nonce-based production polling check."""
+    """Reply to an allowlisted user or a bot-token-signed production probe."""
     chat = update.effective_chat
     message = update.effective_message
     nonce = context.args[0] if context.args else ""
-    if not chat or not message or chat.id not in config.ALLOWED_CHAT_IDS:
+    if not chat or not message or not re.fullmatch(r"[a-f0-9]{32}", nonce):
         return
-    if not re.fullmatch(r"[a-f0-9]{32}", nonce):
+    signature = context.args[1] if len(context.args) > 1 else ""
+    expected = hmac.new(
+        config.TELEGRAM_BOT_TOKEN.encode(), nonce.encode(), hashlib.sha256
+    ).hexdigest()
+    if chat.id not in config.ALLOWED_CHAT_IDS and not hmac.compare_digest(
+        signature, expected
+    ):
         return
     await message.reply_text(f"jobbot-ready:{nonce}")
 
