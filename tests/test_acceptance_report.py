@@ -62,6 +62,20 @@ class AcceptanceReportTests(unittest.TestCase):
         report = assess(self.db, since=self.since, now=self.now)
         self.assertEqual(report["status"], "WAITING_FOR_TERMINAL_OUTCOME")
 
+    def test_failure_categories_are_fixed_codes_without_private_detail(self):
+        self._offer(
+            "123", "failed", self.now,
+            "HelloWorkError: BrowserType.launch: Executable doesn't exist at /private/a",
+        )
+        self._offer("124", "failed", self.now, "Secret token: private@example.com")
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(
+            report["failure_categories"],
+            {"browser_missing": 1, "other_failure": 1},
+        )
+        self.assertNotIn("/private/a", str(report))
+        self.assertNotIn("private@example.com", str(report))
+
     def test_fails_on_stale_queue_and_redacts_error_text(self):
         self._offer("123", "processing", self.now - timedelta(minutes=40))
         self._offer("456", "failed", self.now, "private@example.com")
@@ -71,6 +85,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("applications_failed", report["reasons"])
         self.assertEqual(report["stale_offer_count"], 1)
         self.assertEqual(report["attention_offer_count"], 1)
+        self.assertEqual(report["failure_categories"], {"other_failure": 1})
         self.assertNotIn("123", str(report))
         self.assertNotIn("456", str(report))
         self.assertNotIn("private@example.com", str(report))
