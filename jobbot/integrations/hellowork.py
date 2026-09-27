@@ -269,7 +269,7 @@ async def _recheck_account_application(page, canonical: str) -> bool:
     """Read the offer again without clicking or changing application state."""
     try:
         await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
-        if (urlparse(page.url).hostname or "").casefold() not in _HOSTS:
+        if parse_hellowork_url(page.url)[0] != parse_hellowork_url(canonical)[0]:
             return False
         await page.wait_for_timeout(1200)
         return _application_already_recorded(await page.locator("body").inner_text())
