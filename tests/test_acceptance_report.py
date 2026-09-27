@@ -44,9 +44,17 @@ class AcceptanceReportTests(unittest.TestCase):
         self._offer("124", "completed", self.now, "account_marker_recheck=1")
         report = assess(self.db, since=self.since, now=self.now)
         self.assertEqual(report["status"], "RECHECKED_APPLIED")
+        self.assertEqual(report["rechecked_new_submission_count"], 1)
         self.assertEqual(report["offer_statuses"], {"completed": 2})
         self.assertEqual(report["rechecked_offer_count"], 2)
         self.assertEqual(report["unverified_completed_count"], 0)
+
+    def test_previously_applied_only_is_not_new_delivery(self):
+        self._offer("123", "completed", self.now, "account_marker_recheck=1")
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(report["status"], "NO_NEW_SUBMISSION")
+        self.assertEqual(report["rechecked_offer_count"], 1)
+        self.assertEqual(report["rechecked_new_submission_count"], 0)
 
     def test_legacy_or_unverified_completion_is_not_green(self):
         self._offer("123", "completed", self.now, "confirmed")
