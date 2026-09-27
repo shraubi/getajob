@@ -1,6 +1,10 @@
 name: Application delivery evidence
 
 on:
+  workflow_run:
+    workflows: ["Delivery"]
+    types: [completed]
+    branches: [main]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -14,6 +18,7 @@ concurrency:
 
 jobs:
   assess:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Inspect deployed release and HelloWork outcomes
