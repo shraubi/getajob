@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import tempfile
@@ -64,6 +66,32 @@ class AppHealthCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         await _health_command(update, SimpleNamespace(args=["a" * 32]))
         self.assertEqual(replies, ["jobbot-ready:" + "a" * 32])
+
+    async def test_signed_probe_from_existing_sender_session(self):
+        replies = []
+        async def reply(text):
+            replies.append(text)
+        nonce = "b" * 32
+        signature = hmac.new(
+            config.TELEGRAM_BOT_TOKEN.encode(), nonce.encode(), hashlib.sha256
+        ).hexdigest()
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=999),
+            effective_message=SimpleNamespace(reply_text=reply),
+        )
+        await _health_command(update, SimpleNamespace(args=[nonce, signature]))
+        self.assertEqual(replies, ["jobbot-ready:" + nonce])
+
+    async def test_invalid_signature_from_other_chat_is_ignored(self):
+        replies = []
+        async def reply(text):
+            replies.append(text)
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=999),
+            effective_message=SimpleNamespace(reply_text=reply),
+        )
+        await _health_command(update, SimpleNamespace(args=["a" * 32, "0" * 64]))
+        self.assertEqual(replies, [])
 
     async def test_other_chat_is_ignored(self):
         replies = []
