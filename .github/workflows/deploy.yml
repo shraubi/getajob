@@ -75,6 +75,8 @@ jobs:
             test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
             test "$(docker inspect --format '{{.RestartCount}}' "$bot_id")" = "0"
             test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
+            # Use the same Chromium launch mode as HelloWork applications.
+            docker compose exec -T bot python -m scripts.acceptance_browser
             # A real user-session message proves Telegram polling and reply delivery.
             docker compose exec -T bot python -m scripts.acceptance_telegram
             # Application evidence is assessed separately; deploy allows a fresh waiting state.
