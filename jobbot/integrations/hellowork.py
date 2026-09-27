@@ -265,6 +265,18 @@ async def _fill_conventional_form(
     return tuple(dict.fromkeys(missing))
 
 
+async def _recheck_account_application(page, canonical: str) -> bool:
+    """Read the offer again without clicking or changing application state."""
+    try:
+        await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
+        if (urlparse(page.url).hostname or "").casefold() not in _HOSTS:
+            return False
+        await page.wait_for_timeout(1200)
+        return _application_already_recorded(await page.locator("body").inner_text())
+    except Exception:
+        return False
+
+
 async def submit_hellowork_account_application(
     url: str,
     auth_state_path: Path,
@@ -314,9 +326,12 @@ async def submit_hellowork_account_application(
                     "HelloWork login or verification is required",
                 )
             if _application_already_recorded(body):
+                rechecked = await _recheck_account_application(page, canonical)
+                result_url = page.url
                 await browser.close()
                 return HelloWorkSubmissionResult(
-                    "already_applied", page.url, "application_marker=1",
+                    "already_applied", result_url,
+                    f"account_marker_recheck={int(rechecked)}",
                 )
             challenge = page.locator(
                 'iframe[src*="captcha" i], iframe[title*="challenge" i], '
@@ -352,11 +367,12 @@ async def submit_hellowork_account_application(
                 step_body = await page.locator("body").inner_text()
                 if _application_already_recorded(step_body) or _SUCCESS_RE.search(step_body):
                     await context.storage_state(path=str(auth_state_path))
+                    rechecked = await _recheck_account_application(page, canonical)
                     result_url = page.url
                     await browser.close()
                     return HelloWorkSubmissionResult(
                         "submitted", result_url,
-                        f"application_marker=1 completed_steps={clicked_steps}",
+                        f"account_marker_recheck={int(rechecked)} completed_steps={clicked_steps}",
                     )
                 if (
                     _AUTH_RE.search(step_body)
