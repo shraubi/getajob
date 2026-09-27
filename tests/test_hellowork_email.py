@@ -431,6 +431,49 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
             "HelloWork applications: 2 submitted.",
         )
 
+    def test_failure_detail_has_a_cause_without_private_values(self):
+        self.assertEqual(
+            email_ingest._safe_failure_detail(
+                RuntimeError("BrowserType.launch: Executable doesn't exist at /app/storage/playwright")
+            ),
+            "Playwright browser is missing",
+        )
+        detail = email_ingest._safe_failure_detail(
+            RuntimeError("Unexpected value at https://example.org/a for test@example.org")
+        )
+        self.assertNotIn("https://", detail)
+        self.assertNotIn("test@example.org", detail)
+
+    async def test_many_same_failures_become_one_digest(self):
+        bot = AsyncMock()
+        remaining = list(range(17))
+
+        async def fail_once(*, reports):
+            if not remaining:
+                return None
+            index = remaining.pop(0)
+            reports.append({
+                "offer_id": str(83812300 + index),
+                "status": "failed",
+                "detail": "Browser could not start",
+                "url": f"https://www.hellowork.com/fr-fr/emplois/{83812300 + index}.html",
+            })
+            return "failed"
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(email_ingest.config, "JOBS_DB_PATH", Path(directory) / "jobs.db"),
+                patch("jobbot.email_ingest.process_offer_once", new=fail_once),
+            ):
+                outcomes = await email_ingest.process_pending_offers(bot)
+        self.assertEqual(outcomes, {"failed": 17})
+        bot.send_message.assert_awaited_once()
+        text = bot.send_message.await_args.kwargs["text"]
+        self.assertIn("17 failed", text)
+        self.assertIn("17 x failed: Browser could not start", text)
+        self.assertIn("and 14 more", text)
+        self.assertEqual(text.count("https://"), 3)
+
     async def test_email_directly_applies_to_every_offer_without_jobbot_preflight(self):
         first_url = "https://www.hellowork.com/fr-fr/emplois/81791563.html"
         second_url = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
