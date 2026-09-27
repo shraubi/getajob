@@ -62,6 +62,13 @@ class AcceptanceReportTests(unittest.TestCase):
         report = assess(self.db, since=self.since, now=self.now)
         self.assertEqual(report["status"], "WAITING_FOR_TERMINAL_OUTCOME")
 
+    def test_skipped_offer_prevents_green_assessment(self):
+        self._offer("123", "completed", self.now, "account_marker_recheck=1")
+        self._offer("124", "skipped", self.now)
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("offers_not_applied", report["reasons"])
+
     def test_failure_categories_are_fixed_codes_without_private_detail(self):
         self._offer(
             "123", "failed", self.now,
