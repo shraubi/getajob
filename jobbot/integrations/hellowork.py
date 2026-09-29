@@ -298,6 +298,7 @@ async def submit_hellowork_account_application(
             "auth_required", canonical,
             "HelloWork authentication state is missing",
         )
+    step = "profile_load"
     try:
         if answer_db_path is not None and profile_path is not None:
             migrate_profile_json(answer_db_path, profile_path)
@@ -310,7 +311,9 @@ async def submit_hellowork_account_application(
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
+            step = "browser_launch"
             browser = await playwright.chromium.launch(headless=headless)
+            step = "offer_open"
             context = await browser.new_context(storage_state=str(auth_state_path))
             page = await context.new_page()
             await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
@@ -351,8 +354,9 @@ async def submit_hellowork_account_application(
                 await browser.close()
                 return HelloWorkSubmissionResult(
                     "unavailable", page.url,
-                    "apply_controls=0 application_marker=0",
+                    "step=offer_open apply_controls=0 application_marker=0",
                 )
+            step = "apply_click"
             await apply.first.click()
             await page.wait_for_timeout(800)
 
@@ -364,6 +368,7 @@ async def submit_hellowork_account_application(
                 )
             clicked_steps = 0
             for _ in range(5):
+                step = "form_scan"
                 step_body = await page.locator("body").inner_text()
                 if _application_already_recorded(step_body) or _SUCCESS_RE.search(step_body):
                     await context.storage_state(path=str(auth_state_path))
@@ -392,6 +397,7 @@ async def submit_hellowork_account_application(
                         "auth_required", page.url,
                         "HelloWork CAPTCHA requires attention",
                     )
+                step = "form_fill"
                 missing = await _fill_conventional_form(
                     page, values, Path(), upload_resume=False
                 )
@@ -400,9 +406,9 @@ async def submit_hellowork_account_application(
                     await browser.close()
                     return HelloWorkSubmissionResult(
                         "answers_required", page.url,
-                        "Required HelloWork fields: "
-                        + ", ".join(missing[:8]),
+                        f"step=form_fill required_controls={len(missing)}",
                     )
+                step = "form_confirm"
                 confirm = page.get_by_role(
                     "button",
                     name=re.compile(
@@ -423,9 +429,10 @@ async def submit_hellowork_account_application(
                     await browser.close()
                     return HelloWorkSubmissionResult(
                         "confirmation_required", page.url,
-                        f"completed_steps={clicked_steps} confirm_controls=0 "
+                        f"step=form_confirm completed_steps={clicked_steps} confirm_controls=0 "
                         f"submit_controls=0 visible_buttons={visible_button_count}",
                     )
+                step = "form_submit"
                 await confirm.last.click()
                 clicked_steps += 1
                 await page.wait_for_timeout(1200)
@@ -435,13 +442,24 @@ async def submit_hellowork_account_application(
             await browser.close()
             return HelloWorkSubmissionResult(
                 "submission_unknown", result_url,
-                f"No explicit success confirmation after {clicked_steps} steps",
+                f"step=form_submit completed_steps={clicked_steps} confirmation_marker=0",
             )
     except HelloWorkError:
         raise
     except Exception as exc:
+        error_code = type(exc).__name__
+        if error_code not in {"TimeoutError", "Error", "TargetClosedError"}:
+            error_code = "unexpected"
+        status = (
+            "submission_unknown"
+            if step in {
+                "apply_click", "form_scan", "form_fill",
+                "form_confirm", "form_submit",
+            }
+            else "failed"
+        )
         raise HelloWorkError(
-            f"HelloWork account application failed: {type(exc).__name__}: {exc}"
+            f"step={step} error={error_code}", status=status,
         ) from exc
 
 
