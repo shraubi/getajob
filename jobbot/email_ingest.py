@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections import Counter
 from email import policy
 from email.parser import BytesParser
 
@@ -195,6 +194,10 @@ def _safe_failure_detail(exc: Exception) -> str:
     first = str(exc).splitlines()[0].strip() if str(exc) else ""
     if not first:
         return type(exc).__name__
+    if first.startswith("step=") and re.fullmatch(
+        r"[\w\s=#|./À-ÿ-]+", first
+    ):
+        return first[:300]
     for needle, label in (
         ("Executable doesn't exist", "Playwright browser is missing"),
         ("BrowserType.launch", "Browser could not start"),
@@ -205,11 +208,116 @@ def _safe_failure_detail(exc: Exception) -> str:
     ):
         if needle.casefold() in first.casefold():
             return label
-    first = re.sub(r"https?://\S+", "[url]", first)
-    first = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[email]", first)
-    first = re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[number]", first)
-    first = re.sub(r"(?:/|[A-Za-z]:\\)(?:[^\s:]+[/\\])*[^\s:]+", "[path]", first)
-    return first[:180]
+    return "Unexpected error; inspect private bot logs"
+
+
+def _form_failure_text(detail: str) -> str:
+    match = re.search(
+        r"field=(.*?) action=(\w+) reason=(\w+)", detail
+    )
+    if not match:
+        return "Сбой при заполнении формы; конкретное поле в этой попытке не было записано."
+    field, action, reason = match.groups()
+    actions = {
+        "inspect": "прочитать", "read": "прочитать", "fill": "заполнить",
+        "select": "выбрать вариант", "check": "отметить", "upload": "загрузить файл",
+    }
+    reasons = {
+        "option_not_found": "нужного варианта нет в списке",
+        "not_editable": "поле запрещает ввод",
+        "disabled": "поле отключено",
+        "not_visible": "поле не видно",
+        "ambiguous_control": "найдено несколько одинаковых полей",
+        "browser_closed": "страница или браузер закрылись",
+        "timeout": "сайт не ответил вовремя",
+        "control_error": "сайт отклонил действие",
+    }
+    return (
+        f"Не удалось {actions.get(action, 'обработать')} поле «{field}»: "
+        f"{reasons.get(reason, 'неизвестная ошибка элемента')}."
+    )
+
+
+def _processing_failure_text(detail: str) -> str:
+    if "step=form_fill" in detail:
+        return _form_failure_text(detail)
+    step = re.search(r"step=(\w+)", detail)
+    code = re.search(r"error=(\w+)", detail)
+    if step:
+        phase = {
+            "profile_load": "прочитать профиль кандидата",
+            "browser_launch": "запустить браузер",
+            "offer_open": "открыть страницу вакансии",
+            "apply_click": "нажать кнопку отклика",
+            "form_scan": "прочитать форму отклика",
+            "form_confirm": "найти кнопку подтверждения",
+            "form_submit": "подтвердить отправку",
+        }.get(step.group(1), "обработать вакансию")
+        cause = {
+            "TimeoutError": "сайт не ответил вовремя",
+            "TargetClosedError": "страница или браузер закрылись",
+            "Error": "сайт или браузер отклонил действие",
+            "unexpected": "возникла непредвиденная ошибка",
+        }.get(code.group(1) if code else "", "возникла ошибка")
+        return f"Не удалось {phase}: {cause}."
+    return {
+        "Playwright browser is missing": "Браузер Playwright не установлен на сервере.",
+        "Browser could not start": "Браузер не запустился на сервере.",
+        "HelloWork page timed out": "Страница HelloWork не ответила вовремя.",
+        "HelloWork form control is ambiguous": "На форме несколько одинаковых элементов управления.",
+        "Browser closed unexpectedly": "Браузер неожиданно закрылся.",
+        "Network error while loading HelloWork": "Ошибка сети при открытии HelloWork.",
+    }.get(detail, "При обработке вакансии произошла ошибка; проверьте закрытый журнал бота.")
+
+
+def _offer_attention_text(report: dict[str, str]) -> str:
+    status, detail = report["status"], report["detail"]
+    if status == "unavailable":
+        reason = re.search(r"reason=(\w+)", detail)
+        code = reason.group(1) if reason else ""
+        if code == "offer_closed":
+            problem = "HelloWork показывает, что вакансия закрыта или больше недоступна."
+        elif code in {"http_404", "http_410", "offer_not_found"}:
+            problem = "Страница вакансии не найдена или удалена."
+        else:
+            problem = "На странице нет кнопки «Postuler»; вакансия могла закрыться или сайт изменил интерфейс."
+        outcome = "Отклик не отправлялся."
+        action = "Откройте ссылку и проверьте актуальность вакансии."
+    elif status == "submission_unknown":
+        problem = (
+            "Сайт показал отправку, но после повторного открытия вакансии отметка об отклике не появилась."
+            if "account_marker_recheck=0" in detail
+            else "После нажатия кнопки отклика сайт не показал надёжного подтверждения."
+            if "step=form_submit" in detail and "error=" not in detail
+            else _processing_failure_text(detail)
+        )
+        outcome = "Отправка могла состояться; бот не будет повторять её автоматически."
+        action = "Проверьте эту вакансию в HelloWork → Mes candidatures перед любым повтором."
+    elif status == "answers_required":
+        fields = detail.split("fields=", 1)[1] if "fields=" in detail else "неизвестны"
+        problem = f"Форме не хватает ответа в обязательных полях: {fields}."
+        outcome = "Отправка не подтверждена."
+        action = "Заполните эти поля в профиле HelloWork или вручную на сайте."
+    elif status == "confirmation_required":
+        problem = "На следующем шаге формы нет доступной кнопки продолжения или подтверждения."
+        outcome = "Отправка не подтверждена."
+        action = "Откройте вакансию и проверьте форму вручную."
+    elif status == "auth_required":
+        problem = "HelloWork запросил вход, проверку аккаунта или CAPTCHA."
+        outcome = "Отправка не подтверждена."
+        action = "Войдите в аккаунт и пройдите проверку вручную."
+    elif status == "external_form_unsupported":
+        problem = "Вакансия ведёт к форме работодателя вне HelloWork."
+        outcome = "Бот не подтвердил отправку через эту форму."
+        action = "Откройте вакансию и перейдите к работодателю вручную."
+    else:
+        problem = _processing_failure_text(detail)
+        outcome = "Отправка не подтверждена."
+        action = "Проверьте вакансию в аккаунте перед повтором."
+    return (
+        f"HelloWork · вакансия {report['offer_id']}\n{report['url']}\n"
+        f"Проблема: {problem}\nСтатус: {outcome}\nЧто делать: {action}"
+    )
 
 
 async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
@@ -293,28 +401,31 @@ async def process_pending_offers(bot) -> dict[str, int]:
     while outcome := await process_offer_once(reports=reports):
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     if outcomes:
+        outcome_names = {
+            "submitted": "отправлено и подтверждено",
+            "already_applied": "отклик уже был в аккаунте",
+            "unavailable": "вакансия недоступна",
+            "submission_unknown": "отправка требует проверки",
+            "answers_required": "нужны ответы на вопросы формы",
+            "confirmation_required": "нужно проверить подтверждение",
+            "auth_required": "нужно войти в аккаунт",
+            "external_form_unsupported": "внешняя форма работодателя",
+            "failed": "ошибка обработки",
+        }
         summary = ", ".join(
-            f"{count} {status}" for status, count in sorted(outcomes.items())
+            f"{count} {outcome_names.get(status, 'требуют проверки')}"
+            for status, count in sorted(outcomes.items())
         )
-        lines = [f"HelloWork applications: {summary}."]
+        lines = [f"HelloWork: {summary}."]
         attention = [
             report for report in reports
             if report["status"] not in {"submitted", "already_applied"}
         ]
         if attention:
-            reasons = Counter(
-                (report["status"], report["detail"]) for report in attention
-            )
-            lines.append("Reasons:")
-            for (status, detail), count in reasons.most_common(5):
-                lines.append(f"- {count} x {status}: {detail}")
-            if len(reasons) > 5:
-                lines.append(f"- {len(reasons) - 5} other reason groups")
-            lines.append("Offers to inspect:")
             for report in attention[:3]:
-                lines.append(f'- {report["offer_id"]}: {report["url"]}')
+                lines.append(_offer_attention_text(report))
             if len(attention) > 3:
-                lines.append(f"- and {len(attention) - 3} more")
+                lines.append(f"Ещё {len(attention) - 3} вакансий требуют проверки.")
         await _notify(bot, "\n".join(lines))
     return outcomes
 

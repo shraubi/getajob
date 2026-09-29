@@ -11,6 +11,8 @@ from jobbot.integrations.hellowork import (
     HelloWorkError,
     HelloWorkSubmissionResult,
     _application_already_recorded,
+    _fill_conventional_form,
+    _offer_unavailable_reason,
     _recheck_account_application,
     check_requirements,
     fetch_hellowork_posting,
@@ -29,6 +31,53 @@ HTML = """
 
 
 class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unavailable_reason_distinguishes_closed_offer_from_missing_button(self):
+        self.assertEqual(_offer_unavailable_reason(404, ""), "http_404")
+        self.assertEqual(
+            _offer_unavailable_reason(200, "Cette offre n’est plus disponible"),
+            "offer_closed",
+        )
+        self.assertEqual(
+            _offer_unavailable_reason(200, "Offre HelloWork"),
+            "apply_button_missing",
+        )
+
+    async def test_form_error_names_control_and_action_without_profile_value_or_dom(self):
+        class Control:
+            async def is_disabled(self):
+                return False
+
+            async def get_attribute(self, name):
+                return {"type": "text", "name": "contact_email"}.get(name)
+
+            async def evaluate(self, script):
+                return "INPUT"
+
+            async def input_value(self):
+                return ""
+
+            async def fill(self, value):
+                raise RuntimeError("Timeout 30000ms exceeded for secret@example.com")
+
+        class Controls:
+            async def count(self):
+                return 1
+
+            def nth(self, index):
+                return Control()
+
+        class Page:
+            def locator(self, selector):
+                return Controls()
+
+        with self.assertRaises(HelloWorkError) as raised:
+            await _fill_conventional_form(
+                Page(), {"email": "secret@example.com"}, Path(), upload_resume=False
+            )
+        self.assertEqual(raised.exception.status, "submission_unknown")
+        self.assertIn("field=contact_email action=fill reason=timeout", str(raised.exception))
+        self.assertNotIn("secret@example.com", str(raised.exception))
+
     async def test_detects_accented_success_and_already_applied_text(self):
         self.assertTrue(_application_already_recorded("Candidature envoy\u00e9e"))
         self.assertTrue(_application_already_recorded("Vous avez d\u00e9j\u00e0 postul\u00e9"))
@@ -184,6 +233,19 @@ class HelloWorkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(clicks, ["apply", "confirm", "confirm"])
         self.assertEqual(fill.await_count, 2)
         self.assertEqual(fill.await_args.args[1]["phone"], "+33123456789")
+
+        page = Page()
+        with tempfile.TemporaryDirectory() as directory:
+            auth = Path(directory) / "hellowork-auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            with (
+                patch("playwright.async_api.async_playwright", return_value=Manager()),
+                patch("jobbot.integrations.hellowork._fill_conventional_form", new=AsyncMock(return_value=())),
+                patch("jobbot.integrations.hellowork._recheck_account_application", new=AsyncMock(return_value=False)),
+            ):
+                unverified = await submit_hellowork_account_application(URL, auth)
+        self.assertEqual(unverified.status, "submission_unknown")
+        self.assertIn("account_marker_recheck=0", unverified.detail)
 
     async def test_recheck_requires_fresh_marker_on_the_same_offer(self):
         class Body:
