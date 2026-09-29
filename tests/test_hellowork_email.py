@@ -464,7 +464,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.assert_awaited_once()
         self.assertEqual(
             bot.send_message.await_args.kwargs["text"],
-            "HelloWork applications: 2 submitted.",
+            "HelloWork: 2 отправлено и подтверждено.",
         )
 
     def test_failure_detail_has_a_cause_without_private_values(self):
@@ -479,6 +479,44 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("https://", detail)
         self.assertNotIn("test@example.org", detail)
+
+    def test_telegram_explains_unavailable_offer_and_form_field(self):
+        closed = email_ingest._offer_attention_text({
+            "offer_id": "83812300",
+            "url": "https://www.hellowork.com/fr-fr/emplois/83812300.html",
+            "status": "unavailable",
+            "detail": "step=offer_open reason=offer_closed",
+        })
+        self.assertIn("вакансия закрыта или больше недоступна", closed)
+        self.assertIn("Отклик не отправлялся", closed)
+
+        form = email_ingest._offer_attention_text({
+            "offer_id": "83812301",
+            "url": "https://www.hellowork.com/fr-fr/emplois/83812301.html",
+            "status": "submission_unknown",
+            "detail": "step=form_fill field=contact_email action=fill reason=timeout",
+        })
+        self.assertIn("поле «contact_email»", form)
+        self.assertIn("сайт не ответил вовремя", form)
+        self.assertIn("не будет повторять её автоматически", form)
+
+        browser = email_ingest._offer_attention_text({
+            "offer_id": "83812302",
+            "url": "https://www.hellowork.com/fr-fr/emplois/83812302.html",
+            "status": "failed",
+            "detail": "step=offer_open error=TimeoutError",
+        })
+        self.assertIn("Не удалось открыть страницу вакансии", browser)
+        self.assertIn("сайт не ответил вовремя", browser)
+
+        unverified = email_ingest._offer_attention_text({
+            "offer_id": "83812303",
+            "url": "https://www.hellowork.com/fr-fr/emplois/83812303.html",
+            "status": "submission_unknown",
+            "detail": "account_marker_recheck=0 completed_steps=1",
+        })
+        self.assertIn("после повторного открытия вакансии отметка об отклике не появилась", unverified)
+        self.assertIn("не будет повторять её автоматически", unverified)
 
     async def test_many_same_failures_become_one_digest(self):
         bot = AsyncMock()
@@ -505,9 +543,9 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcomes, {"failed": 17})
         bot.send_message.assert_awaited_once()
         text = bot.send_message.await_args.kwargs["text"]
-        self.assertIn("17 failed", text)
-        self.assertIn("17 x failed: Browser could not start", text)
-        self.assertIn("and 14 more", text)
+        self.assertIn("17 ошибка обработки", text)
+        self.assertIn("Браузер не запустился на сервере", text)
+        self.assertIn("Ещё 14 вакансий требуют проверки", text)
         self.assertEqual(text.count("https://"), 3)
 
     async def test_email_directly_applies_to_one_new_offer_without_jobbot_preflight(self):
