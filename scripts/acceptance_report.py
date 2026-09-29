@@ -19,6 +19,12 @@ def _utc(value: str) -> datetime:
 def _failure_category(detail: str) -> str:
     """Map private failure text to a fixed, non-identifying reason code."""
     value = detail.casefold()
+    for step in (
+        "profile_load", "browser_launch", "offer_open", "apply_click",
+        "form_scan", "form_fill", "form_confirm", "form_submit",
+    ):
+        if f"step={step}" in value:
+            return ("submission_unknown_" if "submission_unknown" in value else "") + step
     if "executable doesn\u0027t exist" in value or "browser is missing" in value:
         return "browser_missing"
     if "browsertype.launch" in value:
@@ -52,6 +58,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "offer_statuses": {},
         "failure_categories": {},
         "stale_offer_count": 0,
+        "active_offer_count": 0,
+        "held_offer_count": 0,
         "attention_offer_count": 0,
         "rechecked_offer_count": 0,
         "rechecked_new_submission_count": 0,
@@ -83,6 +91,10 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
                 """SELECT status, updated_at FROM inbound_offers
                    WHERE provider='hellowork' AND status IN ('pending', 'processing')"""
             ).fetchall()
+            held_count = connection.execute(
+                """SELECT COUNT(*) FROM inbound_offers
+                   WHERE provider='hellowork' AND status='held'"""
+            ).fetchone()[0]
         finally:
             connection.close()
     except sqlite3.Error:
@@ -110,6 +122,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         for row in offer_rows
     )
     report["stale_offer_count"] = stale_count
+    report["active_offer_count"] = len(active_rows)
+    report["held_offer_count"] = held_count
     report["attention_offer_count"] = attention_count
     report["rechecked_offer_count"] = rechecked_count
     report["rechecked_new_submission_count"] = sum(
@@ -127,7 +141,7 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         report["reasons"].append("applications_failed")
     if offers.get("paused", 0):
         report["reasons"].append("applications_need_attention")
-    if any(status not in {"completed", "pending", "processing", "failed", "paused"}
+    if any(status not in {"completed", "pending", "processing", "failed", "paused", "held"}
            for status in offers):
         report["reasons"].append("offers_not_applied")
     if report["reasons"]:

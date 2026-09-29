@@ -22,10 +22,9 @@ from jobbot.email_store import (
     close_stale_rejected_emails,
     finish_offer,
     get_offer,
+    hold_existing_offers,
     record_email_offers,
     record_rejected_email,
-    requeue_legacy_screened_offers,
-    requeue_browser_launch_failures,
     replayable_rejected_uids,
 )
 from jobbot.integrations.hellowork import HelloWorkSubmissionResult
@@ -248,62 +247,7 @@ class EmailStoreTests(unittest.TestCase):
             self.assertEqual(get_offer(db, "1")["status"], "completed")
             self.assertIsNone(claim_next_offer(db))
 
-    def test_requeues_offers_blocked_by_removed_screening_pipeline(self):
-        offers = (
-            ("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),
-            ("2", "https://www.hellowork.com/fr-fr/emplois/2.html"),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "jobs.db"
-            record_email_offers(
-                db, mailbox_key="bot", uid_validity="7", uid="9",
-                message_id="m1", raw_message=b"raw", offers=offers,
-            )
-            finish_offer(db, "1", "skipped", "unsupported_vacancy")
-            finish_offer(
-                db, "2", "failed",
-                "UnknownDirectionError: Could not confidently classify this vacancy",
-            )
-
-            self.assertEqual(
-                requeue_legacy_screened_offers(db, application_revision=2),
-                2,
-            )
-            self.assertEqual(claim_next_offer(db)["offer_id"], "1")
-            finish_offer(db, "1", "completed", application_revision=2)
-            self.assertEqual(claim_next_offer(db)["offer_id"], "2")
-
-    def test_ambiguous_direct_results_retry_once_per_application_revision(self):
-        offers = (
-            ("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),
-            ("2", "https://www.hellowork.com/fr-fr/emplois/2.html"),
-            ("3", "https://www.hellowork.com/fr-fr/emplois/3.html"),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "jobs.db"
-            record_email_offers(
-                db, mailbox_key="bot", uid_validity="7", uid="9",
-                message_id="m1", raw_message=b"raw", offers=offers,
-            )
-            finish_offer(db, "1", "paused", "submission_unknown")
-            finish_offer(db, "2", "paused", "confirmation_required")
-            finish_offer(db, "3", "failed", "failed")
-
-            self.assertEqual(
-                requeue_legacy_screened_offers(db, application_revision=2),
-                3,
-            )
-            for offer_id in ("1", "2", "3"):
-                finish_offer(
-                    db, offer_id, "paused", "submission_unknown",
-                    application_revision=2,
-                )
-            self.assertEqual(
-                requeue_legacy_screened_offers(db, application_revision=2),
-                0,
-            )
-
-    def test_production_claim_skips_old_replayed_backlog(self):
+    def test_one_time_hold_preserves_historical_rows(self):
         offers = tuple(
             (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
             for index in (1, 2, 3)
@@ -317,61 +261,70 @@ class EmailStoreTests(unittest.TestCase):
             old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
             with sqlite3.connect(db) as connection:
                 connection.execute(
-                    """UPDATE inbound_offers SET created_at=?, attempts=1,
-                       application_revision=4 WHERE offer_id='1'""",
+                    """UPDATE inbound_offers SET created_at=?, attempts=1
+                       WHERE offer_id='1'""",
                     (old,),
                 )
                 connection.execute(
-                    """UPDATE inbound_offers SET created_at=?, attempts=1,
-                       application_revision=5 WHERE offer_id='2'""",
-                    (old,),
+                    """UPDATE inbound_offers SET status='processing', attempts=1
+                       WHERE offer_id='2'""",
                 )
-            self.assertEqual(
-                claim_next_offer(db, min_recovery_revision=5)["offer_id"], "2"
-            )
-            finish_offer(db, "2", "completed", application_revision=5)
-            self.assertEqual(
-                claim_next_offer(db, min_recovery_revision=5)["offer_id"], "3"
-            )
-            finish_offer(db, "3", "completed", application_revision=5)
-            self.assertIsNone(claim_next_offer(db, min_recovery_revision=5))
-            self.assertEqual(get_offer(db, "1")["status"], "pending")
+                connection.execute(
+                    """UPDATE inbound_offers SET status='paused',
+                       last_error='submission_unknown' WHERE offer_id='3'""",
+                )
+            self.assertEqual(hold_existing_offers(db), 2)
+            self.assertEqual(hold_existing_offers(db), 0)
+            self.assertEqual(get_offer(db, "1")["status"], "held")
+            self.assertEqual(get_offer(db, "2")["status"], "held")
+            self.assertEqual(get_offer(db, "3")["last_error"], "submission_unknown")
+            self.assertIsNone(claim_next_offer(db))
 
-    def test_requeues_only_pre_submit_browser_failure_once(self):
+    def test_single_fresh_claim_holds_remaining_and_never_retries_unknown(self):
         offers = tuple(
             (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
             for index in (1, 2, 3)
         )
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"
+            hold_existing_offers(db)
             record_email_offers(
                 db, mailbox_key="bot", uid_validity="7", uid="9",
                 message_id="m1", raw_message=b"raw", offers=offers,
             )
-            finish_offer(
-                db, "1", "failed",
-                "HelloWorkError: HelloWork account application failed: "
-                "Error: BrowserType.launch: browser could not start",
-                application_revision=4,
+            self.assertEqual(claim_next_offer(db)["offer_id"], "1")
+            finish_offer(db, "1", "paused", "submission_unknown")
+            self.assertIsNone(claim_next_offer(db))
+            self.assertEqual(get_offer(db, "1")["status"], "paused")
+            self.assertEqual(get_offer(db, "2")["status"], "held")
+            self.assertEqual(get_offer(db, "3")["status"], "held")
+
+    def test_expired_pending_and_stale_processing_are_held(self):
+        offers = tuple(
+            (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
+            for index in (1, 2)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            hold_existing_offers(db)
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers,
             )
-            finish_offer(
-                db, "2", "failed", "HelloWorkError: submit timeout",
-                application_revision=4,
-            )
-            finish_offer(
-                db, "3", "completed", "account_marker_recheck=1 completed_steps=2",
-                application_revision=4,
-            )
-            self.assertEqual(
-                requeue_browser_launch_failures(db, application_revision=5), 1
-            )
-            self.assertEqual(
-                requeue_browser_launch_failures(db, application_revision=5), 0
-            )
-            self.assertEqual(get_offer(db, "1")["status"], "pending")
-            self.assertEqual(get_offer(db, "1")["application_revision"], 5)
-            self.assertEqual(get_offer(db, "2")["status"], "failed")
-            self.assertEqual(get_offer(db, "3")["status"], "completed")
+            old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    """UPDATE inbound_offers SET created_at=? WHERE offer_id='1'""",
+                    (old,),
+                )
+                connection.execute(
+                    """UPDATE inbound_offers SET status='processing', attempts=1,
+                       updated_at=? WHERE offer_id='2'""",
+                    (old,),
+                )
+            self.assertIsNone(claim_next_offer(db))
+            self.assertEqual(get_offer(db, "1")["status"], "held")
+            self.assertEqual(get_offer(db, "2")["status"], "held")
 
     def test_existing_schema_migrates_and_rejected_receipt_can_be_queued(self):
         offers = (("1", "https://www.hellowork.com/fr-fr/emplois/1.html"),)
@@ -417,7 +370,18 @@ class EmailStoreTests(unittest.TestCase):
                     db, mailbox_key="bot", uid_validity="7",
                     parser_revision=2, limit=100,
                 )),
-                25,
+                1,
+            )
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    "UPDATE inbound_email_messages SET first_seen_at=?",
+                    ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),),
+                )
+            self.assertEqual(
+                replayable_rejected_uids(
+                    db, mailbox_key="bot", uid_validity="7", parser_revision=2,
+                ),
+                (),
             )
             self.assertEqual(
                 close_stale_rejected_emails(
@@ -546,7 +510,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("and 14 more", text)
         self.assertEqual(text.count("https://"), 3)
 
-    async def test_email_directly_applies_to_every_offer_without_jobbot_preflight(self):
+    async def test_email_directly_applies_to_one_new_offer_without_jobbot_preflight(self):
         first_url = "https://www.hellowork.com/fr-fr/emplois/81791563.html"
         second_url = "https://www.hellowork.com/fr-fr/emplois/81835625.html"
         message = EmailMessage()
@@ -575,10 +539,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
             db = root / "jobs.db"
             bot = AsyncMock()
             submit = AsyncMock(
-                side_effect=(
-                    HelloWorkSubmissionResult("submitted", first_url, "confirmed"),
-                    HelloWorkSubmissionResult("submitted", second_url, "confirmed"),
-                )
+                return_value=HelloWorkSubmissionResult("submitted", first_url, "confirmed")
             )
             with (
                 patch.object(email_ingest.config, "JOBS_DB_PATH", db),
@@ -594,15 +555,16 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
                     new=submit,
                 ),
             ):
+                hold_existing_offers(db)
                 self.assertEqual(await email_ingest.ingest_email_once(bot, Inbox()), 1)
                 bot.reset_mock()
 
                 self.assertEqual(await email_ingest.process_offer_once(), "submitted")
                 self.assertEqual(get_offer(db, "81791563")["status"], "completed")
-                self.assertEqual(await email_ingest.process_offer_once(), "submitted")
-                self.assertEqual(get_offer(db, "81835625")["status"], "completed")
+                self.assertIsNone(await email_ingest.process_offer_once())
+                self.assertEqual(get_offer(db, "81835625")["status"], "held")
                 self.assertIsNone(claim_next_offer(db))
-                self.assertEqual(submit.await_count, 2)
+                self.assertEqual(submit.await_count, 1)
                 self.assertEqual(submit.await_args.kwargs["answer_db_path"], db)
                 bot.send_message.assert_not_called()
 
@@ -611,6 +573,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(email_ingest.config, "HELLOWORK_IMAP_USERNAME", "bot"),
             patch.object(email_ingest.config, "HELLOWORK_IMAP_APP_PASSWORD", "secret"),
+            patch("jobbot.email_ingest.hold_existing_offers", return_value=0),
             patch(
                 "jobbot.email_ingest.ingest_email_once",
                 new=AsyncMock(side_effect=(RuntimeError("imap down"), asyncio.CancelledError())),

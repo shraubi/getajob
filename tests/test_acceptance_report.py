@@ -70,6 +70,23 @@ class AcceptanceReportTests(unittest.TestCase):
         report = assess(self.db, since=self.since, now=self.now)
         self.assertEqual(report["status"], "WAITING_FOR_TERMINAL_OUTCOME")
 
+    def test_held_history_is_separate_from_live_queue(self):
+        self._offer("123", "held", self.now - timedelta(days=10))
+        self._offer("124", "completed", self.now,
+                    "account_marker_recheck=1 completed_steps=2")
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(report["status"], "RECHECKED_APPLIED")
+        self.assertEqual(report["held_offer_count"], 1)
+        self.assertEqual(report["active_offer_count"], 0)
+        self.assertEqual(report["stale_offer_count"], 0)
+
+    def test_safe_step_code_is_reported_without_exception_text(self):
+        self._offer("123", "failed", self.now,
+                    "step=form_submit error=TimeoutError private@example.com")
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(report["failure_categories"], {"form_submit": 1})
+        self.assertNotIn("private@example.com", str(report))
+
     def test_skipped_offer_prevents_green_assessment(self):
         self._offer("123", "completed", self.now, "account_marker_recheck=1")
         self._offer("124", "skipped", self.now)
