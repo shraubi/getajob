@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS inbound_offers (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(provider, offer_id)
 );
+CREATE TABLE IF NOT EXISTS inbound_offer_controls (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -188,7 +192,7 @@ def replayable_rejected_uids(
     mailbox_key: str,
     uid_validity: str,
     parser_revision: int,
-    limit: int = 25,
+    limit: int = 1,
 ) -> tuple[str, ...]:
     if not db_path.is_file():
         return ()
@@ -198,12 +202,17 @@ def replayable_rejected_uids(
             """SELECT uid FROM inbound_email_messages
                WHERE mailbox_key=? AND uid_validity=? AND status='rejected'
                  AND parser_revision < ?
+                  AND first_seen_at >= ?
                  AND last_error IN (
                      'no HelloWork tracking links found',
                      'no valid HelloWork offer links found'
                  )
                ORDER BY id LIMIT ?""",
-            (mailbox_key, uid_validity, parser_revision, max(1, min(limit, 25))),
+            (
+                mailbox_key, uid_validity, parser_revision,
+                (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
+                max(1, min(limit, 1)),
+            ),
         ).fetchall()
         return tuple(str(row["uid"]) for row in rows)
     finally:
@@ -276,106 +285,95 @@ def close_stale_rejected_emails(
         connection.close()
 
 
-def requeue_legacy_screened_offers(
-    db_path: Path,
-    *,
-    application_revision: int = 1,
-) -> int:
-    """Recover offers blocked by old or ambiguous application logic once."""
-    if not db_path.is_file():
-        return 0
-    now = datetime.now(timezone.utc).isoformat()
-    connection = _connect(db_path)
-    try:
-        cursor = connection.execute(
-            """UPDATE inbound_offers
-               SET status='pending', last_error='', updated_at=?
-               WHERE provider='hellowork' AND application_revision < ? AND (
-                   status IN ('paused', 'failed', 'skipped')
-                   OR
-                   (status='skipped' AND last_error='unsupported_vacancy')
-                   OR
-                   (status='failed' AND last_error=
-                       'UnknownDirectionError: Could not confidently classify this vacancy')
-                   OR
-                   (status='paused' AND last_error IN (
-                       'confirmation_required', 'submission_unknown'
-                   ))
-                   OR
-                   (status='failed' AND last_error='failed')
-                   OR
-                   (status='failed' AND application_revision=1)
-               )""",
-            (now, application_revision),
-        )
-        connection.commit()
-        return cursor.rowcount
-    finally:
-        connection.close()
-
-
-def requeue_browser_launch_failures(
-    db_path: Path, *, application_revision: int
-) -> int:
-    """Retry once only when Chromium failed before any application page opened."""
-    if not db_path.is_file():
-        return 0
-    connection = _connect(db_path)
-    try:
-        cursor = connection.execute(
-            """UPDATE inbound_offers
-               SET status='pending', last_error='', application_revision=?,
-                   updated_at=?
-               WHERE provider='hellowork' AND status='failed'
-                 AND application_revision < ?
-                 AND lower(last_error) LIKE '%browsertype.launch%'""",
-            (
-                application_revision,
-                datetime.now(timezone.utc).isoformat(),
-                application_revision,
-            ),
-        )
-        connection.commit()
-        return cursor.rowcount
-    finally:
-        connection.close()
-
-
-def claim_next_offer(
-    db_path: Path, *, min_recovery_revision: int | None = None
-) -> dict | None:
+def hold_existing_offers(db_path: Path) -> int:
+    """One-time quarantine before the worker reads mail on this release."""
     connection = _connect(db_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        stale = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
-        connection.execute(
-            """UPDATE inbound_offers SET status='pending', updated_at=?
-               WHERE status='processing' AND updated_at < ?""",
-            (datetime.now(timezone.utc).isoformat(), stale),
-        )
-        if min_recovery_revision is None:
-            row = connection.execute(
-                """SELECT * FROM inbound_offers WHERE status='pending'
-                   ORDER BY created_at LIMIT 1"""
-            ).fetchone()
-        else:
-            recent = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            row = connection.execute(
-                """SELECT * FROM inbound_offers
-                   WHERE status='pending' AND provider='hellowork'
-                     AND (application_revision >= ?
-                          OR (attempts=0 AND created_at >= ?))
-                   ORDER BY created_at LIMIT 1""",
-                (min_recovery_revision, recent),
-            ).fetchone()
-        if not row:
+        done = connection.execute(
+            "SELECT 1 FROM inbound_offer_controls WHERE key='legacy_queue_held_v1'"
+        ).fetchone()
+        if done:
             connection.rollback()
+            return 0
+        cursor = connection.execute(
+            """UPDATE inbound_offers
+               SET status='held',
+                   last_error=CASE WHEN last_error='' THEN
+                       CASE WHEN status='processing'
+                            THEN 'held_processing_outcome_unknown'
+                            ELSE 'held_legacy_queue' END
+                       ELSE last_error END
+               WHERE provider='hellowork' AND status IN ('pending', 'processing')"""
+        )
+        connection.execute(
+            """INSERT INTO inbound_offer_controls(key, value)
+               VALUES ('legacy_queue_held_v1', '1')"""
+        )
+        connection.commit()
+        return cursor.rowcount
+    finally:
+        connection.close()
+
+
+def claim_next_offer(db_path: Path) -> dict | None:
+    """Claim at most one fresh, never-attempted offer for this release."""
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(minutes=30)).isoformat()
+        recent = (now - timedelta(hours=24)).isoformat()
+        connection.execute(
+            """UPDATE inbound_offers
+               SET status='held',
+                   last_error=CASE WHEN last_error=''
+                       THEN 'held_processing_outcome_unknown' ELSE last_error END
+               WHERE provider='hellowork' AND status='processing'
+                 AND updated_at < ?""",
+            (stale,),
+        )
+        connection.execute(
+            """UPDATE inbound_offers
+               SET status='held',
+                   last_error=CASE WHEN last_error=''
+                       THEN 'held_offer_expired' ELSE last_error END
+               WHERE provider='hellowork' AND status='pending'
+                 AND (created_at < ? OR attempts > 0)""",
+            (recent,),
+        )
+        used = connection.execute(
+            "SELECT 1 FROM inbound_offer_controls WHERE key='single_live_attempt_v1'"
+        ).fetchone()
+        if used:
+            connection.execute(
+                """UPDATE inbound_offers SET status='held',
+                   last_error=CASE WHEN last_error=''
+                       THEN 'held_application_limit' ELSE last_error END
+                   WHERE provider='hellowork' AND status='pending'"""
+            )
+            connection.commit()
+            return None
+        row = connection.execute(
+            """SELECT * FROM inbound_offers
+               WHERE provider='hellowork' AND status='pending'
+                 AND attempts=0 AND created_at >= ?
+               ORDER BY created_at, offer_id LIMIT 1""",
+            (recent,),
+        ).fetchone()
+        if not row:
+            connection.commit()
             return None
         connection.execute(
             """UPDATE inbound_offers
                SET status='processing', attempts=attempts+1, updated_at=?
-               WHERE provider=? AND offer_id=?""",
-            (datetime.now(timezone.utc).isoformat(), row["provider"], row["offer_id"]),
+               WHERE provider=? AND offer_id=? AND status='pending' AND attempts=0""",
+            (now.isoformat(), row["provider"], row["offer_id"]),
+        )
+        connection.execute(
+            """INSERT INTO inbound_offer_controls(key, value)
+               VALUES ('single_live_attempt_v1', ?)""",
+            (row["offer_id"],),
         )
         connection.commit()
         return dict(row)
