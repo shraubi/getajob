@@ -75,6 +75,22 @@ def _application_already_recorded(value: str) -> bool:
     return any(marker in normalized for marker in _APPLICATION_MARKERS)
 
 
+def _offer_unavailable_reason(http_status: int | None, body: str) -> str:
+    if http_status in {404, 410}:
+        return f"http_{http_status}"
+    normalized = _normalized_ui_text(body)
+    if "offre" in normalized and "plus disponible" in normalized:
+        return "offer_closed"
+    if any(phrase in normalized for phrase in (
+        "offre n est plus disponible", "offre n'est plus disponible",
+        "offre a expire", "offre expiree", "offre pourvue",
+    )):
+        return "offer_closed"
+    if "page introuvable" in normalized or "offre introuvable" in normalized:
+        return "offer_not_found"
+    return "apply_button_missing"
+
+
 def parse_hellowork_url(url: str) -> tuple[str, str]:
     parsed = urlparse(url)
     match = _PATH_RE.match(parsed.path)
@@ -207,6 +223,32 @@ def _account_profile_values(raw: dict) -> dict[str, str]:
     }
 
 
+def _form_field_name(value: str, kind: str, index: int) -> str:
+    """Describe a control without copying its current value or page content."""
+    cleaned = " ".join(value.split())
+    cleaned = re.sub(r"https?://\S+|\S+@\S+", "[private]", cleaned)
+    cleaned = re.sub(r"\+?\d[\d ()-]{7,}\d", "[private]", cleaned)
+    cleaned = re.sub(r"[^\w\sÀ-ÿ()#./-]", "", cleaned, flags=re.UNICODE)[:64].strip()
+    return cleaned or f"{kind} #{index + 1}"
+
+
+def _form_error_reason(exc: Exception) -> str:
+    """Classify a Playwright error without exposing its DOM snapshot or values."""
+    message = str(exc).casefold()
+    for needle, code in (
+        ("did not find some options", "option_not_found"),
+        ("not editable", "not_editable"),
+        ("not enabled", "disabled"),
+        ("not visible", "not_visible"),
+        ("strict mode violation", "ambiguous_control"),
+        ("target closed", "browser_closed"),
+        ("timeout", "timeout"),
+    ):
+        if needle in message:
+            return code
+    return "control_error"
+
+
 async def _fill_conventional_form(
     page, values: dict[str, str], resume_path: Path, *, upload_resume: bool
 ) -> tuple[str, ...]:
@@ -214,54 +256,69 @@ async def _fill_conventional_form(
     controls = page.locator("input:visible, textarea:visible, select:visible")
     for index in range(await controls.count()):
         control = controls.nth(index)
-        if await control.is_disabled():
-            continue
-        kind = (await control.get_attribute("type") or await control.evaluate("e => e.tagName")).casefold()
-        if kind in {"hidden", "submit", "button", "reset"}:
-            continue
-        if kind == "file":
-            if upload_resume:
-                await control.set_input_files(str(resume_path))
-            continue
-        name = " ".join(filter(None, [
-            await control.get_attribute("name"), await control.get_attribute("id"),
-            await control.get_attribute("placeholder"), await control.get_attribute("aria-label"),
-        ])).casefold()
-        value = ""
-        matched_key = ""
-        for key, candidate in values.items():
-            aliases = {
-                "first": ("first", "prenom", "prÃ©nom"), "last": ("last", "surname", "nom"),
-                "email": ("email", "mail"), "phone": ("phone", "tel", "mobile"),
-                "address": ("address", "adresse"),
-            }.get(key, (key.casefold(),))
-            if any(alias in name for alias in aliases):
-                value = candidate
-                matched_key = key
-                break
-        if kind in {"checkbox", "radio"}:
-            checked = await control.is_checked()
-            option_value = (await control.get_attribute("value") or "on").casefold()
-            if value and (
-                value.casefold() in {"1", "true", "yes", "oui", "on", option_value}
-            ):
-                await control.check()
-                checked = True
-            if await control.get_attribute("required") is not None and not checked:
-                missing.append(await control.get_attribute("name") or "required choice")
-            continue
-        current = await control.input_value()
-        should_replace = matched_key in {"first", "last", "email", "phone", "address"}
-        if value and (not current or (should_replace and current.strip() != value.strip())):
-            if (await control.evaluate("e => e.tagName")).casefold() == "select":
-                try:
-                    await control.select_option(label=value)
-                except Exception:
-                    await control.select_option(value=value)
-            else:
-                await control.fill(value)
-        elif await control.get_attribute("required") is not None and not current:
-            missing.append(name or "required field")
+        field = f"control #{index + 1}"
+        action = "inspect"
+        try:
+            if await control.is_disabled():
+                continue
+            kind = (await control.get_attribute("type") or await control.evaluate("e => e.tagName")).casefold()
+            if kind in {"hidden", "submit", "button", "reset"}:
+                continue
+            attrs = [
+                await control.get_attribute("aria-label"),
+                await control.get_attribute("placeholder"),
+                await control.get_attribute("name"),
+                await control.get_attribute("id"),
+            ]
+            field = _form_field_name(next((item for item in attrs if item), ""), kind, index)
+            if kind == "file":
+                if upload_resume:
+                    action = "upload"
+                    await control.set_input_files(str(resume_path))
+                continue
+            name = " ".join(filter(None, attrs)).casefold()
+            value = ""
+            matched_key = ""
+            for key, candidate in values.items():
+                aliases = {
+                    "first": ("first", "prenom", "prénom"), "last": ("last", "surname", "nom"),
+                    "email": ("email", "mail"), "phone": ("phone", "tel", "mobile"),
+                    "address": ("address", "adresse"),
+                }.get(key, (key.casefold(),))
+                if any(alias in name for alias in aliases):
+                    value = candidate
+                    matched_key = key
+                    break
+            if kind in {"checkbox", "radio"}:
+                action = "check"
+                checked = await control.is_checked()
+                option_value = (await control.get_attribute("value") or "on").casefold()
+                if value and value.casefold() in {"1", "true", "yes", "oui", "on", option_value}:
+                    await control.check()
+                    checked = True
+                if await control.get_attribute("required") is not None and not checked:
+                    missing.append(field)
+                continue
+            action = "read"
+            current = await control.input_value()
+            should_replace = matched_key in {"first", "last", "email", "phone", "address"}
+            if value and (not current or (should_replace and current.strip() != value.strip())):
+                if (await control.evaluate("e => e.tagName")).casefold() == "select":
+                    action = "select"
+                    try:
+                        await control.select_option(label=value)
+                    except Exception:
+                        await control.select_option(value=value)
+                else:
+                    action = "fill"
+                    await control.fill(value)
+            elif await control.get_attribute("required") is not None and not current:
+                missing.append(field)
+        except Exception as exc:
+            raise HelloWorkError(
+                f"step=form_fill field={field} action={action} reason={_form_error_reason(exc)}",
+                status="submission_unknown",
+            ) from exc
     return tuple(dict.fromkeys(missing))
 
 
@@ -316,7 +373,7 @@ async def submit_hellowork_account_application(
             step = "offer_open"
             context = await browser.new_context(storage_state=str(auth_state_path))
             page = await context.new_page()
-            await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
+            response = await page.goto(canonical, wait_until="domcontentloaded", timeout=45_000)
             body = await page.locator("body").inner_text()
             if (
                 _AUTH_RE.search(body)
@@ -354,7 +411,10 @@ async def submit_hellowork_account_application(
                 await browser.close()
                 return HelloWorkSubmissionResult(
                     "unavailable", page.url,
-                    "step=offer_open apply_controls=0 application_marker=0",
+                    "step=offer_open reason="
+                    + _offer_unavailable_reason(
+                        response.status if response is not None else None, body
+                    ),
                 )
             step = "apply_click"
             await apply.first.click()
@@ -376,7 +436,7 @@ async def submit_hellowork_account_application(
                     result_url = page.url
                     await browser.close()
                     return HelloWorkSubmissionResult(
-                        "submitted", result_url,
+                        "submitted" if rechecked else "submission_unknown", result_url,
                         f"account_marker_recheck={int(rechecked)} completed_steps={clicked_steps}",
                     )
                 if (
@@ -406,7 +466,8 @@ async def submit_hellowork_account_application(
                     await browser.close()
                     return HelloWorkSubmissionResult(
                         "answers_required", page.url,
-                        f"step=form_fill required_controls={len(missing)}",
+                        f"step=form_fill required_controls={len(missing)} "
+                        f"fields={' | '.join(missing[:5])}",
                     )
                 step = "form_confirm"
                 confirm = page.get_by_role(
