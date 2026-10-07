@@ -34,11 +34,27 @@ jobs:
             deployed_sha="$(git rev-parse HEAD)"
             current_sha="$(git rev-parse origin/main)"
             echo "deployed_sha=$deployed_sha current_sha=$current_sha"
-            test "$deployed_sha" = "$current_sha"
+            release_status=stale
+            if [ "$deployed_sha" = "$current_sha" ]; then release_status=current; fi
             docker compose ps
-            bot_id="$(docker compose ps -q bot)"
+            bot_id="$(docker compose ps -q bot || true)"
+            bot_health=missing
+            if [ -n "$bot_id" ]; then
+              bot_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$bot_id" || echo unknown)"
+            fi
+            assessment_status=1
+            if [ -n "$bot_id" ] && [ "$bot_health" = healthy ]; then
+              assessment_status=0
+              docker compose exec -T bot python -m scripts.acceptance_report \
+                --db /app/storage/jobs.db || assessment_status=$?
+            fi
+            # A one-off container can report even when the long-running bot is unhealthy.
+            docker compose run --rm --no-deps bot python -m scripts.assessment_telegram \
+              --db /app/storage/jobs.db \
+              --state /app/storage/assessment-telegram.json \
+              --bot-health "$bot_health" --release-status "$release_status"
+            test "$release_status" = current
             test -n "$bot_id"
-            test "$(docker inspect --format '{{.State.Running}}' "$bot_id")" = "true"
-            test "$(docker inspect --format '{{.State.Health.Status}}' "$bot_id")" = "healthy"
-            docker compose exec -T bot python -m scripts.acceptance_report \
-              --db /app/storage/jobs.db
+            test "$bot_health" = healthy
+            test "$assessment_status" = 0
+
