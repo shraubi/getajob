@@ -60,6 +60,7 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
         "stale_offer_count": 0,
         "active_offer_count": 0,
         "held_offer_count": 0,
+        "application_gate_closed": False,
         "attention_offer_count": 0,
         "rechecked_offer_count": 0,
         "rechecked_new_submission_count": 0,
@@ -95,6 +96,12 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
                 """SELECT COUNT(*) FROM inbound_offers
                    WHERE provider='hellowork' AND status='held'"""
             ).fetchone()[0]
+            controls_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbound_offer_controls'"
+            ).fetchone()
+            gate_closed = bool(controls_table and connection.execute(
+                "SELECT 1 FROM inbound_offer_controls WHERE key='single_live_attempt_v1'"
+            ).fetchone())
         finally:
             connection.close()
     except sqlite3.Error:
@@ -124,6 +131,7 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     report["stale_offer_count"] = stale_count
     report["active_offer_count"] = len(active_rows)
     report["held_offer_count"] = held_count
+    report["application_gate_closed"] = gate_closed
     report["attention_offer_count"] = attention_count
     report["rechecked_offer_count"] = rechecked_count
     report["rechecked_new_submission_count"] = sum(
@@ -191,3 +199,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
