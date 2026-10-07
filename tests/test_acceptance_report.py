@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,7 +14,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.db = Path(self.temp.name) / "jobs.db"
         self.now = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
         self.since = self.now - timedelta(hours=1)
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection:
             connection.executescript(
                 """CREATE TABLE inbound_email_messages (
                        status TEXT, first_seen_at TEXT, handled_at TEXT
@@ -28,12 +29,13 @@ class AcceptanceReportTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _offer(self, offer_id, status, updated_at, detail=""):
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection:
             connection.execute(
                 """INSERT INTO inbound_offers
                    VALUES ('hellowork', ?, ?, ?, ?, ?)""",
                 (offer_id, status, detail, self.since.isoformat(), updated_at.isoformat()),
             )
+            connection.commit()
 
     def test_waits_when_no_live_offer_has_arrived(self):
         report = assess(self.db, since=self.since, now=self.now)
@@ -80,6 +82,18 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(report["active_offer_count"], 0)
         self.assertEqual(report["stale_offer_count"], 0)
 
+    def test_permanent_application_gate_is_visible_without_blocking_deploy(self):
+        self._offer("123", "held", self.now)
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.executescript(
+                """CREATE TABLE inbound_offer_controls (key TEXT PRIMARY KEY, value TEXT);
+                   INSERT INTO inbound_offer_controls VALUES ('single_live_attempt_v1', '123');"""
+            )
+        report = assess(self.db, since=self.since, now=self.now)
+        self.assertEqual(report["status"], "WAITING_FOR_TERMINAL_OUTCOME")
+        self.assertTrue(report["application_gate_closed"])
+        self.assertEqual(report["offer_statuses"], {"held": 1})
+
     def test_safe_step_code_is_reported_without_exception_text(self):
         self._offer("123", "failed", self.now,
                     "step=form_submit error=TimeoutError private@example.com")
@@ -125,3 +139,4 @@ class AcceptanceReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
