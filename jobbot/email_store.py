@@ -316,8 +316,17 @@ def hold_existing_offers(db_path: Path) -> int:
         connection.close()
 
 
-def claim_next_offer(db_path: Path) -> dict | None:
-    """Claim at most one fresh, never-attempted offer for this release."""
+def live_attempts_used(connection: sqlite3.Connection) -> int:
+    controls = connection.execute(
+        """SELECT key, value FROM inbound_offer_controls
+           WHERE key IN ('single_live_attempt_v1', 'additional_live_attempts_v1')"""
+    )
+    values = dict(controls)
+    return int("single_live_attempt_v1" in values) + int(values.get("additional_live_attempts_v1", 0))
+
+
+def claim_next_offer(db_path: Path, *, attempt_limit: int = 1) -> dict | None:
+    """Claim a fresh, never-attempted offer within the persistent trial budget."""
     connection = _connect(db_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -342,10 +351,8 @@ def claim_next_offer(db_path: Path) -> dict | None:
                  AND (created_at < ? OR attempts > 0)""",
             (recent,),
         )
-        used = connection.execute(
-            "SELECT 1 FROM inbound_offer_controls WHERE key='single_live_attempt_v1'"
-        ).fetchone()
-        if used:
+        used = live_attempts_used(connection)
+        if used >= attempt_limit:
             connection.execute(
                 """UPDATE inbound_offers SET status='held',
                    last_error=CASE WHEN last_error=''
@@ -370,11 +377,19 @@ def claim_next_offer(db_path: Path) -> dict | None:
                WHERE provider=? AND offer_id=? AND status='pending' AND attempts=0""",
             (now.isoformat(), row["provider"], row["offer_id"]),
         )
-        connection.execute(
-            """INSERT INTO inbound_offer_controls(key, value)
-               VALUES ('single_live_attempt_v1', ?)""",
-            (row["offer_id"],),
-        )
+        if used == 0:
+            connection.execute(
+                """INSERT INTO inbound_offer_controls(key, value)
+                   VALUES ('single_live_attempt_v1', ?)""",
+                (row["offer_id"],),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO inbound_offer_controls(key, value)
+                   VALUES ('additional_live_attempts_v1', ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (str(used),),
+            )
         connection.commit()
         return dict(row)
     finally:

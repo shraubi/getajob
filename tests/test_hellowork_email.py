@@ -247,6 +247,31 @@ class EmailStoreTests(unittest.TestCase):
             self.assertEqual(get_offer(db, "1")["status"], "completed")
             self.assertIsNone(claim_next_offer(db))
 
+    def test_increased_trial_limit_counts_previous_attempt_without_replaying_held_offers(self):
+        offers = tuple(
+            (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
+            for index in range(1, 6)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "jobs.db"
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="9",
+                message_id="m1", raw_message=b"raw", offers=offers[:2],
+            )
+            self.assertEqual(claim_next_offer(db)["offer_id"], "1")
+            finish_offer(db, "1", "failed")
+            self.assertIsNone(claim_next_offer(db))
+            record_email_offers(
+                db, mailbox_key="bot", uid_validity="7", uid="10",
+                message_id="m2", raw_message=b"new", offers=offers[2:],
+            )
+            for offer_id in ("3", "4"):
+                self.assertEqual(claim_next_offer(db, attempt_limit=3)["offer_id"], offer_id)
+                finish_offer(db, offer_id, "failed")
+            self.assertIsNone(claim_next_offer(db, attempt_limit=3))
+            self.assertEqual(get_offer(db, "2")["status"], "held")
+            self.assertEqual(get_offer(db, "5")["status"], "held")
+
     def test_one_time_hold_preserves_historical_rows(self):
         offers = tuple(
             (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")

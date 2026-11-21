@@ -70,8 +70,8 @@ def format_message(report: dict, bot_health: str, release_status: str,
     ]
     if report["application_gate_closed"]:
         lines.append(
-            "Автоотклики остановлены: лимит одной попытки уже использован. "
-            "Новые вакансии удерживаются, пока ограничение не исправлено."
+            "Автоотклики остановлены: лимит пробных попыток исчерпан. "
+            "Новые вакансии удерживаются, пока лимит не увеличен."
         )
     if release_status != "current":
         lines.append("Деплой не соответствует текущему main.")

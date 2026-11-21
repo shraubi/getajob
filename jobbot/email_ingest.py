@@ -321,7 +321,9 @@ def _offer_attention_text(report: dict[str, str]) -> str:
 
 
 async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
-    queued = claim_next_offer(config.JOBS_DB_PATH)
+    queued = claim_next_offer(
+        config.JOBS_DB_PATH, attempt_limit=config.HELLOWORK_LIVE_ATTEMPT_LIMIT
+    )
     if not queued:
         return None
     offer_id = queued["offer_id"]
