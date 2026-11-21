@@ -325,6 +325,41 @@ def live_attempts_used(connection: sqlite3.Connection) -> int:
     return int("single_live_attempt_v1" in values) + int(values.get("additional_live_attempts_v1", 0))
 
 
+def live_attempt_limit(connection: sqlite3.Connection, default: int) -> int:
+    row = connection.execute(
+        "SELECT value FROM inbound_offer_controls WHERE key='live_attempt_limit'"
+    ).fetchone()
+    return int(row[0]) if row else default
+
+
+def trial_status(db_path: Path, default: int, *, adjustment: int = 0) -> tuple[int, int, dict | None]:
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        used = live_attempts_used(connection)
+        limit = live_attempt_limit(connection, default)
+        if adjustment:
+            limit = max(used, limit) + adjustment
+            limit = max(used, limit)
+            connection.execute(
+                """INSERT INTO inbound_offer_controls(key, value) VALUES ('live_attempt_limit', ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (str(limit),),
+            )
+        latest = connection.execute(
+            """SELECT offer_id, canonical_url, status, last_error FROM inbound_offers
+               WHERE provider='hellowork' AND offer_id=(
+                   SELECT value FROM inbound_offer_controls
+                   WHERE key IN ('latest_live_attempt', 'single_live_attempt_v1')
+                   ORDER BY key LIMIT 1
+               )"""
+        ).fetchone()
+        connection.commit()
+        return used, limit, dict(latest) if latest else None
+    finally:
+        connection.close()
+
+
 def claim_next_offer(db_path: Path, *, attempt_limit: int = 1) -> dict | None:
     """Claim a fresh, never-attempted offer within the persistent trial budget."""
     connection = _connect(db_path)
@@ -352,19 +387,13 @@ def claim_next_offer(db_path: Path, *, attempt_limit: int = 1) -> dict | None:
             (recent,),
         )
         used = live_attempts_used(connection)
-        if used >= attempt_limit:
-            connection.execute(
-                """UPDATE inbound_offers SET status='held',
-                   last_error=CASE WHEN last_error=''
-                       THEN 'held_application_limit' ELSE last_error END
-                   WHERE provider='hellowork' AND status='pending'"""
-            )
+        if used >= live_attempt_limit(connection, attempt_limit):
             connection.commit()
             return None
         row = connection.execute(
             """SELECT * FROM inbound_offers
-               WHERE provider='hellowork' AND status='pending'
-                 AND attempts=0 AND created_at >= ?
+               WHERE provider='hellowork' AND attempts=0 AND created_at >= ?
+                 AND (status='pending' OR (status='held' AND last_error='held_application_limit'))
                ORDER BY created_at, offer_id LIMIT 1""",
             (recent,),
         ).fetchone()
@@ -373,8 +402,8 @@ def claim_next_offer(db_path: Path, *, attempt_limit: int = 1) -> dict | None:
             return None
         connection.execute(
             """UPDATE inbound_offers
-               SET status='processing', attempts=attempts+1, updated_at=?
-               WHERE provider=? AND offer_id=? AND status='pending' AND attempts=0""",
+               SET status='processing', attempts=attempts+1, last_error='', updated_at=?
+               WHERE provider=? AND offer_id=? AND attempts=0""",
             (now.isoformat(), row["provider"], row["offer_id"]),
         )
         if used == 0:
@@ -390,6 +419,11 @@ def claim_next_offer(db_path: Path, *, attempt_limit: int = 1) -> dict | None:
                    ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                 (str(used),),
             )
+        connection.execute(
+            """INSERT INTO inbound_offer_controls(key, value) VALUES ('latest_live_attempt', ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (row["offer_id"],),
+        )
         connection.commit()
         return dict(row)
     finally:

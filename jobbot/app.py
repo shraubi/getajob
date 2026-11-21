@@ -13,7 +13,7 @@ from jobbot import config
 from jobbot.handlers import handle_callback, handle_vacancy_message
 from jobbot.logging_config import configure_logging
 from jobbot.telegram_queue import telegram_queue_worker
-from jobbot.email_ingest import hellowork_email_worker
+from jobbot.email_ingest import hellowork_email_worker, hellowork_trial_callback, hellowork_trial_command
 
 logger = logging.getLogger(__name__)
 
@@ -83,5 +83,7 @@ def run() -> None:
     vacancy_filter = filters.TEXT & ~filters.COMMAND
     app.add_handler(CommandHandler("health", _health_command))
     app.add_handler(MessageHandler(vacancy_filter, handle_vacancy_message))
+    app.add_handler(CommandHandler("hellowork", hellowork_trial_command))
+    app.add_handler(CallbackQueryHandler(hellowork_trial_callback, pattern=r"^hellowork_trial:(plus|minus)$"))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling(allowed_updates=["message", "callback_query"])

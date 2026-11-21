@@ -19,6 +19,7 @@ os.environ.setdefault("YOUR_CHAT_ID", "1")
 from jobbot import email_ingest
 from jobbot.email_store import (
     claim_next_offer,
+    trial_status,
     close_stale_rejected_emails,
     finish_offer,
     get_offer,
@@ -247,30 +248,35 @@ class EmailStoreTests(unittest.TestCase):
             self.assertEqual(get_offer(db, "1")["status"], "completed")
             self.assertIsNone(claim_next_offer(db))
 
-    def test_increased_trial_limit_counts_previous_attempt_without_replaying_held_offers(self):
+    def test_trial_buttons_resume_fresh_offers_without_retrying_the_failure(self):
         offers = tuple(
             (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
-            for index in range(1, 6)
+            for index in range(1, 5)
         )
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "jobs.db"
             record_email_offers(
                 db, mailbox_key="bot", uid_validity="7", uid="9",
-                message_id="m1", raw_message=b"raw", offers=offers[:2],
+                message_id="m1", raw_message=b"raw", offers=offers,
             )
             self.assertEqual(claim_next_offer(db)["offer_id"], "1")
-            finish_offer(db, "1", "failed")
+            finish_offer(db, "1", "paused", "submission_unknown step=form_fill")
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    """UPDATE inbound_offers SET status='held',
+                       last_error='held_application_limit' WHERE offer_id='2'"""
+                )
             self.assertIsNone(claim_next_offer(db))
-            record_email_offers(
-                db, mailbox_key="bot", uid_validity="7", uid="10",
-                message_id="m2", raw_message=b"new", offers=offers[2:],
-            )
-            for offer_id in ("3", "4"):
-                self.assertEqual(claim_next_offer(db, attempt_limit=3)["offer_id"], offer_id)
-                finish_offer(db, offer_id, "failed")
-            self.assertIsNone(claim_next_offer(db, attempt_limit=3))
-            self.assertEqual(get_offer(db, "2")["status"], "held")
-            self.assertEqual(get_offer(db, "5")["status"], "held")
+            used, limit, latest = trial_status(db, 1, adjustment=1)
+            self.assertEqual((used, limit), (1, 2))
+            self.assertEqual(latest["last_error"], "submission_unknown step=form_fill")
+            self.assertEqual(claim_next_offer(db)["offer_id"], "2")
+            finish_offer(db, "2", "failed")
+            self.assertEqual(trial_status(db, 1, adjustment=1)[:2], (2, 3))
+            self.assertEqual(trial_status(db, 1, adjustment=-1)[:2], (2, 2))
+            self.assertIsNone(claim_next_offer(db))
+            self.assertEqual(get_offer(db, "1")["status"], "paused")
+            self.assertEqual(get_offer(db, "3")["status"], "pending")
 
     def test_one_time_hold_preserves_historical_rows(self):
         offers = tuple(
@@ -305,7 +311,7 @@ class EmailStoreTests(unittest.TestCase):
             self.assertEqual(get_offer(db, "3")["last_error"], "submission_unknown")
             self.assertIsNone(claim_next_offer(db))
 
-    def test_single_fresh_claim_holds_remaining_and_never_retries_unknown(self):
+    def test_single_fresh_claim_keeps_remaining_pending_and_never_retries_unknown(self):
         offers = tuple(
             (str(index), f"https://www.hellowork.com/fr-fr/emplois/{index}.html")
             for index in (1, 2, 3)
@@ -321,8 +327,8 @@ class EmailStoreTests(unittest.TestCase):
             finish_offer(db, "1", "paused", "submission_unknown")
             self.assertIsNone(claim_next_offer(db))
             self.assertEqual(get_offer(db, "1")["status"], "paused")
-            self.assertEqual(get_offer(db, "2")["status"], "held")
-            self.assertEqual(get_offer(db, "3")["status"], "held")
+            self.assertEqual(get_offer(db, "2")["status"], "pending")
+            self.assertEqual(get_offer(db, "3")["status"], "pending")
 
     def test_expired_pending_and_stale_processing_are_held(self):
         offers = tuple(
@@ -489,7 +495,8 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.assert_awaited_once()
         self.assertEqual(
             bot.send_message.await_args.kwargs["text"],
-            "HelloWork: 2 отправлено и подтверждено.",
+            "HelloWork: 2 отправлено и подтверждено.\n"
+            "HelloWork · использовано попыток 0, лимит 1, осталось 1.",
         )
 
     def test_failure_detail_has_a_cause_without_private_values(self):
@@ -625,7 +632,7 @@ class HelloWorkProductionPathTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await email_ingest.process_offer_once(), "submitted")
                 self.assertEqual(get_offer(db, "81791563")["status"], "completed")
                 self.assertIsNone(await email_ingest.process_offer_once())
-                self.assertEqual(get_offer(db, "81835625")["status"], "held")
+                self.assertEqual(get_offer(db, "81835625")["status"], "pending")
                 self.assertIsNone(claim_next_offer(db))
                 self.assertEqual(submit.await_count, 1)
                 self.assertEqual(submit.await_args.kwargs["answer_db_path"], db)
