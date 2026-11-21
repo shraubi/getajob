@@ -27,7 +27,7 @@ class AssessmentTelegramTests(unittest.TestCase):
 
     def test_report_explains_silent_application_stop(self):
         message = format_message(self.report, "healthy", "current", self.now)
-        self.assertIn("лимит одной попытки уже использован", message)
+        self.assertIn("лимит пробных попыток исчерпан", message)
         self.assertIn("Подтверждённых новых откликов: 0", message)
         self.assertIn("Всего удержано вакансий: 1949", message)
         self.assertIn("писем принято 4", message)
@@ -66,8 +66,8 @@ class AssessmentTelegramTests(unittest.TestCase):
                        CREATE TABLE inbound_offers
                        (provider TEXT, status TEXT, last_error TEXT,
                         created_at TEXT, updated_at TEXT);
-                       CREATE TABLE inbound_offer_controls (key TEXT PRIMARY KEY);
-                       INSERT INTO inbound_offer_controls VALUES ('single_live_attempt_v1');"""
+                       CREATE TABLE inbound_offer_controls (key TEXT PRIMARY KEY, value TEXT);
+                       INSERT INTO inbound_offer_controls VALUES ('single_live_attempt_v1', '123');"""
                 )
                 now = datetime.now(timezone.utc).isoformat()
                 connection.execute(

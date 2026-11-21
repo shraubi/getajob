@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from jobbot.email_store import live_attempt_limit, live_attempts_used
 
 
 def _utc(value: str) -> datetime:
@@ -99,9 +102,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
             controls_table = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbound_offer_controls'"
             ).fetchone()
-            gate_closed = bool(controls_table and connection.execute(
-                "SELECT 1 FROM inbound_offer_controls WHERE key='single_live_attempt_v1'"
-            ).fetchone())
+            attempt_limit = int(os.environ.get("HELLOWORK_LIVE_ATTEMPT_LIMIT", "1"))
+            gate_closed = bool(controls_table and live_attempts_used(connection) >= live_attempt_limit(connection, attempt_limit))
         finally:
             connection.close()
     except sqlite3.Error:
@@ -118,7 +120,8 @@ def assess(db_path: Path, *, since: datetime, now: datetime, stale_minutes: int 
     ).items()))
     cutoff = now - timedelta(minutes=stale_minutes)
     stale_count = sum(
-        _utc(str(row["updated_at"])) < cutoff for row in active_rows
+        _utc(str(row["updated_at"])) < cutoff
+        for row in active_rows if row["status"] == "processing" or not gate_closed
     )
     attention_count = sum(
         row["status"] in {"failed", "paused"} for row in offer_rows

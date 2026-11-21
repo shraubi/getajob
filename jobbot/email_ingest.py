@@ -8,6 +8,8 @@ import re
 from email import policy
 from email.parser import BytesParser
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from jobbot import config
 from jobbot.email_store import (
     claim_next_offer,
@@ -18,6 +20,7 @@ from jobbot.email_store import (
     record_email_offers,
     record_rejected_email,
     replayable_rejected_uids,
+    trial_status,
 )
 from jobbot.integrations.hellowork import (
     HelloWorkError,
@@ -299,7 +302,10 @@ def _offer_attention_text(report: dict[str, str]) -> str:
         outcome = "Отправка не подтверждена."
         action = "Заполните эти поля в профиле HelloWork или вручную на сайте."
     elif status == "confirmation_required":
-        problem = "На следующем шаге формы нет доступной кнопки продолжения или подтверждения."
+        problem = (
+            _processing_failure_text(detail) if "step=form_fill" in detail
+            else "На следующем шаге формы нет доступной кнопки продолжения или подтверждения."
+        )
         outcome = "Отправка не подтверждена."
         action = "Откройте вакансию и проверьте форму вручную."
     elif status == "auth_required":
@@ -320,8 +326,73 @@ def _offer_attention_text(report: dict[str, str]) -> str:
     )
 
 
+def _trial_controls(adjustment: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    used, limit, latest = trial_status(
+        config.JOBS_DB_PATH, config.HELLOWORK_LIVE_ATTEMPT_LIMIT, adjustment=adjustment
+    )
+    remaining = max(0, limit - used)
+    lines = [f"HelloWork · использовано попыток {used}, лимит {limit}, осталось {remaining}."]
+    if remaining == 0:
+        lines.append("Очередь на паузе. Нажмите +, чтобы разрешить ещё одну свежую вакансию.")
+    if latest:
+        status = latest["status"]
+        detail = latest["last_error"]
+        if status == "processing":
+            lines.append("Последняя попытка выполняется.")
+        elif status == "completed":
+            lines.append(
+                "Последняя попытка подтверждена в HelloWork."
+                if detail.startswith("account_marker_recheck=1")
+                else "Последняя попытка завершена. Проверьте её в HelloWork."
+            )
+        else:
+            result, _, diagnostic = detail.partition(" ")
+            if result not in {
+                "unavailable", "submission_unknown", "answers_required",
+                "confirmation_required", "auth_required", "external_form_unsupported", "failed",
+            }:
+                result, diagnostic = status, detail
+            lines.append(_offer_attention_text({
+                "status": result, "detail": diagnostic, "offer_id": latest["offer_id"],
+                "url": latest["canonical_url"],
+            }))
+    buttons = InlineKeyboardMarkup([[
+        InlineKeyboardButton("−", callback_data="hellowork_trial:minus"),
+        InlineKeyboardButton("+", callback_data="hellowork_trial:plus"),
+    ]])
+    return "\n".join(lines), buttons
+
+
+def _is_trial_owner(update) -> bool:
+    return bool(
+        update.effective_chat and update.effective_chat.type == "private"
+        and update.effective_chat.id == config.YOUR_CHAT_ID
+        and update.effective_user and update.effective_user.id == config.YOUR_CHAT_ID
+    )
+
+
+async def hellowork_trial_command(update, context) -> None:
+    if _is_trial_owner(update):
+        text, buttons = _trial_controls()
+        await update.effective_message.reply_text(text, reply_markup=buttons)
+
+
+async def hellowork_trial_callback(update, context) -> None:
+    query = update.callback_query
+    if not _is_trial_owner(update):
+        await query.answer()
+        return
+    adjustment = 1 if query.data == "hellowork_trial:plus" else -1
+    text, buttons = _trial_controls(adjustment)
+    await query.answer()
+    if query.message.text != text:
+        await query.edit_message_text(text, reply_markup=buttons)
+
+
 async def process_offer_once(bot=None, reports: list[dict[str, str]] | None = None) -> str | None:
-    queued = claim_next_offer(config.JOBS_DB_PATH)
+    queued = claim_next_offer(
+        config.JOBS_DB_PATH, attempt_limit=config.HELLOWORK_LIVE_ATTEMPT_LIMIT
+    )
     if not queued:
         return None
     offer_id = queued["offer_id"]
@@ -426,7 +497,12 @@ async def process_pending_offers(bot) -> dict[str, int]:
                 lines.append(_offer_attention_text(report))
             if len(attention) > 3:
                 lines.append(f"Ещё {len(attention) - 3} вакансий требуют проверки.")
-        await _notify(bot, "\n".join(lines))
+        controls, buttons = _trial_controls()
+        await bot.send_message(
+            chat_id=config.YOUR_CHAT_ID,
+            text="\n".join((*lines, controls.split("\n", 1)[0])),
+            reply_markup=buttons,
+        )
     return outcomes
 
 
